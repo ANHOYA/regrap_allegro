@@ -69,11 +69,16 @@ for _ in range(5):
 log(f"✅ URDF 임포트 완료! Articulation Root: {prim_path}")
 
 # 4. Robot 객체 생성
+# 디버깅: 우선 기본 방향(손가락 위)으로 확인, 추후 물병잡기 자세로 변경 가능
+# X축 180도: [0, 1, 0, 0], 기본(위): [1, 0, 0, 0]
+hand_quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0])  # 기본 방향 (손가락 위)
+
 allegro = world.scene.add(
     Robot(
         prim_path=prim_path,
         name="allegro_hand",
-        position=np.array([0.0, 0.0, 0.5]),
+        position=np.array([0.0, 0.0, 0.3]),       # 지면에서 0.3m 위 (디버깅용)
+        orientation=hand_quat_wxyz,                 # 손가락이 아래를 향하는 자세
     )
 )
 
@@ -86,6 +91,19 @@ joint_names = allegro.dof_names
 log(f"🤖 Allegro Hand 로드 성공! DOF 수: {num_dof}")
 log(f"   관절 목록: {joint_names}")
 
+# sender → Isaac Sim DOF 순서 매핑 테이블 구축
+# sender는 joint_0 ~ joint_15를 순서대로 보냄
+# Isaac Sim의 DOF 순서는 다를 수 있으므로 역매핑 필요
+sender_to_sim = np.zeros(min(num_dof, 16), dtype=np.int32)
+for sender_idx in range(min(num_dof, 16)):
+    target_name = f"joint_{sender_idx}"
+    if target_name in joint_names:
+        sim_idx = list(joint_names).index(target_name)
+        sender_to_sim[sender_idx] = sim_idx
+    else:
+        sender_to_sim[sender_idx] = sender_idx  # fallback
+log(f"   매핑 테이블 (sender→sim): {sender_to_sim.tolist()}")
+
 # 16개 관절의 최신 타겟 각도를 저장할 배열
 current_target_angles = np.zeros(num_dof, dtype=np.float32)
 
@@ -95,8 +113,9 @@ try:
         try:
             data, addr = sock.recvfrom(64)
             received_angles = np.array(struct.unpack('16f', data), dtype=np.float32)
-            # DOF 수에 맞게 자르거나 패딩
-            current_target_angles[:min(num_dof, 16)] = received_angles[:min(num_dof, 16)]
+            # sender 순서 → Isaac Sim DOF 순서로 재매핑
+            for s_idx in range(min(len(received_angles), len(sender_to_sim))):
+                current_target_angles[sender_to_sim[s_idx]] = received_angles[s_idx]
         except BlockingIOError:
             pass
 
