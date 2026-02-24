@@ -1,0 +1,219 @@
+<?xml version="1.0" ?>
+<!-- Allegro Hand Right - Simplified URDF for Isaac Sim Teleoperation -->
+<!-- 16 DOF: 4 fingers x 4 joints each (Index, Middle, Ring, Thumb) -->
+<robot name="allegro_hand_right">
+
+  <!-- ============ BASE LINK ============ -->
+  <link name="base_link">
+    <visual>
+      <geometry><box size="0.09 0.08 0.02"/></geometry>
+      <material name="palm_mat"><color rgba="0.3 0.3 0.3 1"/></material>
+    </visual>
+    <collision>
+      <geometry><box size="0.09 0.08 0.02"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.4"/>
+      <inertia ixx="1e-3" ixy="0" ixz="0" iyy="1e-3" iyz="0" izz="1e-3"/>
+    </inertial>
+  </link>
+
+  <!-- ============ MACRO-LIKE FINGER DEFINITION ============ -->
+  <!-- INDEX FINGER (joints 0-3) -->
+  <link name="index_link_0">
+    <visual><geometry><cylinder radius="0.008" length="0.054"/></geometry><material name="finger_mat"><color rgba="0.7 0.7 0.7 1"/></material></visual>
+    <collision><geometry><cylinder radius="0.008" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.048"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_0" type="revolute">
+    <parent link="base_link"/><child link="index_link_0"/>
+    <origin xyz="0.0177 0.0032 0.0"/> <axis xyz="1 0 0"/>
+    <limit lower="-0.47" upper="0.47" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="index_link_1">
+    <visual><geometry><cylinder radius="0.008" length="0.054"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.008" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.048"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_1" type="revolute">
+    <parent link="index_link_0"/><child link="index_link_1"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.196" upper="1.61" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="index_link_2">
+    <visual><geometry><cylinder radius="0.007" length="0.054"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.007" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.04"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_2" type="revolute">
+    <parent link="index_link_1"/><child link="index_link_2"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.174" upper="1.709" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="index_link_3">
+    <visual><geometry><cylinder radius="0.006" length="0.027"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.006" length="0.027"/></geometry></collision>
+    <inertial><mass value="0.025"/><inertia ixx="5e-6" ixy="0" ixz="0" iyy="5e-6" iyz="0" izz="5e-7"/></inertial>
+  </link>
+  <joint name="joint_3" type="revolute">
+    <parent link="index_link_2"/><child link="index_link_3"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.227" upper="1.618" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <!-- MIDDLE FINGER (joints 4-7) -->
+  <link name="middle_link_0">
+    <visual><geometry><cylinder radius="0.008" length="0.054"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.008" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.048"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_4" type="revolute">
+    <parent link="base_link"/><child link="middle_link_0"/>
+    <origin xyz="0.0 0.0032 0.0"/> <axis xyz="1 0 0"/>
+    <limit lower="-0.47" upper="0.47" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="middle_link_1">
+    <visual><geometry><cylinder radius="0.008" length="0.054"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.008" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.048"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_5" type="revolute">
+    <parent link="middle_link_0"/><child link="middle_link_1"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.196" upper="1.61" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="middle_link_2">
+    <visual><geometry><cylinder radius="0.007" length="0.054"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.007" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.04"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_6" type="revolute">
+    <parent link="middle_link_1"/><child link="middle_link_2"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.174" upper="1.709" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="middle_link_3">
+    <visual><geometry><cylinder radius="0.006" length="0.027"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.006" length="0.027"/></geometry></collision>
+    <inertial><mass value="0.025"/><inertia ixx="5e-6" ixy="0" ixz="0" iyy="5e-6" iyz="0" izz="5e-7"/></inertial>
+  </link>
+  <joint name="joint_7" type="revolute">
+    <parent link="middle_link_2"/><child link="middle_link_3"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.227" upper="1.618" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <!-- RING FINGER (joints 8-11) -->
+  <link name="ring_link_0">
+    <visual><geometry><cylinder radius="0.008" length="0.054"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.008" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.048"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_8" type="revolute">
+    <parent link="base_link"/><child link="ring_link_0"/>
+    <origin xyz="-0.0177 0.0032 0.0"/> <axis xyz="1 0 0"/>
+    <limit lower="-0.47" upper="0.47" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="ring_link_1">
+    <visual><geometry><cylinder radius="0.008" length="0.054"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.008" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.048"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_9" type="revolute">
+    <parent link="ring_link_0"/><child link="ring_link_1"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.196" upper="1.61" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="ring_link_2">
+    <visual><geometry><cylinder radius="0.007" length="0.054"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.007" length="0.054"/></geometry></collision>
+    <inertial><mass value="0.04"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_10" type="revolute">
+    <parent link="ring_link_1"/><child link="ring_link_2"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.174" upper="1.709" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="ring_link_3">
+    <visual><geometry><cylinder radius="0.006" length="0.027"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.006" length="0.027"/></geometry></collision>
+    <inertial><mass value="0.025"/><inertia ixx="5e-6" ixy="0" ixz="0" iyy="5e-6" iyz="0" izz="5e-7"/></inertial>
+  </link>
+  <joint name="joint_11" type="revolute">
+    <parent link="ring_link_2"/><child link="ring_link_3"/>
+    <origin xyz="0 0 0.054"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.227" upper="1.618" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <!-- THUMB (joints 12-15) -->
+  <link name="thumb_link_0">
+    <visual><geometry><cylinder radius="0.009" length="0.041"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.009" length="0.041"/></geometry></collision>
+    <inertial><mass value="0.055"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_12" type="revolute">
+    <parent link="base_link"/><child link="thumb_link_0"/>
+    <origin xyz="-0.0182 -0.019333 -0.045174" rpy="3.14159 1.34209 -0.2618"/>
+    <axis xyz="-1 0 0"/>
+    <limit lower="0.263" upper="1.396" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="thumb_link_1">
+    <visual><geometry><cylinder radius="0.009" length="0.05"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.009" length="0.05"/></geometry></collision>
+    <inertial><mass value="0.048"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_13" type="revolute">
+    <parent link="thumb_link_0"/><child link="thumb_link_1"/>
+    <origin xyz="0 0 0.041"/> <axis xyz="0 0 -1"/>
+    <limit lower="-0.105" upper="1.163" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="thumb_link_2">
+    <visual><geometry><cylinder radius="0.008" length="0.039"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.008" length="0.039"/></geometry></collision>
+    <inertial><mass value="0.04"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="joint_14" type="revolute">
+    <parent link="thumb_link_1"/><child link="thumb_link_2"/>
+    <origin xyz="0 0 0.05"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.189" upper="1.644" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+  <link name="thumb_link_3">
+    <visual><geometry><cylinder radius="0.007" length="0.027"/></geometry><material name="finger_mat"/></visual>
+    <collision><geometry><cylinder radius="0.007" length="0.027"/></geometry></collision>
+    <inertial><mass value="0.025"/><inertia ixx="5e-6" ixy="0" ixz="0" iyy="5e-6" iyz="0" izz="5e-7"/></inertial>
+  </link>
+  <joint name="joint_15" type="revolute">
+    <parent link="thumb_link_2"/><child link="thumb_link_3"/>
+    <origin xyz="0 0 0.039"/> <axis xyz="0 0 1"/>
+    <limit lower="-0.162" upper="1.719" effort="0.7" velocity="7.0"/>
+    <dynamics damping="0.01" friction="0.001"/>
+  </joint>
+
+</robot>
