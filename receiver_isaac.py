@@ -68,16 +68,33 @@ for _ in range(5):
 log(f"✅ URDF 임포트 완료! Articulation Root: {prim_path}")
 
 # 4. Robot 객체 생성
-# 디버깅: 우선 기본 방향(손가락 위)으로 확인, 추후 물병잡기 자세로 변경 가능
 # X축 180도: [0, 1, 0, 0], 기본(위): [1, 0, 0, 0]
-hand_quat_wxyz = np.array([0.0, 1.0, 0.0, 0.0])  # 기본 방향 (손가락 위)
+hand_quat_wxyz = np.array([0.7071, 0.7071, 0.0, 0.0])  # 손가락 아래 방향
+hand_position = np.array([0.0, 0.0, 0.7])
+
+# fix_base=True일 때 Robot()의 position/orientation이 적용 안 될 수 있으므로
+# USD API로 직접 root prim의 transform 설정
+from pxr import UsdGeom, Gf
+stage = omni.usd.get_context().get_stage()
+# prim_path는 articulation root (예: /allegro_hand_right/root_joint)
+# 상위 prim (robot 루트)에 transform 적용
+robot_root_path = prim_path.rsplit("/", 1)[0]  # /allegro_hand_right
+robot_prim = stage.GetPrimAtPath(robot_root_path)
+if robot_prim.IsValid():
+    xform = UsdGeom.Xformable(robot_prim)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(*hand_position.tolist()))
+    xform.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
+        Gf.Quatd(float(hand_quat_wxyz[0]), float(hand_quat_wxyz[1]), float(hand_quat_wxyz[2]), float(hand_quat_wxyz[3]))
+    )
+    log(f"📐 Transform 설정: pos={hand_position}, quat={hand_quat_wxyz}")
 
 allegro = world.scene.add(
     Robot(
         prim_path=prim_path,
         name="allegro_hand",
-        position=np.array([0.0, 0.0, 0.7]),       # 지면에서 0.5m 위
-        orientation=hand_quat_wxyz,                 # 손가락이 아래를 향하는 자세
+        position=hand_position,
+        orientation=hand_quat_wxyz,
     )
 )
 
