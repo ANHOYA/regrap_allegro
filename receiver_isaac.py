@@ -36,7 +36,7 @@ world.scene.add_default_ground_plane()
 
 # 3. 로컬 URDF에서 Allegro Hand 로드
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-URDF_PATH = os.path.join(SCRIPT_DIR, "assets", "allegro_hand", "allegro_hand_right.urdf")
+URDF_PATH = os.path.join(SCRIPT_DIR, "allegro_hand_right_local.urdf")
 
 if not os.path.exists(URDF_PATH):
     raise FileNotFoundError(f"URDF 파일을 찾을 수 없습니다: {URDF_PATH}")
@@ -77,7 +77,7 @@ allegro = world.scene.add(
     Robot(
         prim_path=prim_path,
         name="allegro_hand",
-        position=np.array([0.0, 0.0, 0.3]),       # 지면에서 0.3m 위 (디버깅용)
+        position=np.array([0.0, 0.0, 0.5]),       # 지면에서 0.5m 위
         orientation=hand_quat_wxyz,                 # 손가락이 아래를 향하는 자세
     )
 )
