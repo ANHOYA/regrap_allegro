@@ -1,4 +1,4 @@
-# 🚨 Isaac Sim 초기화 (가장 먼저!)
+# 🚨 Isaac Sim Initialization
 from isaacsim import SimulationApp
 simulation_app = SimulationApp({"headless": False})
 
@@ -10,17 +10,16 @@ import numpy as np
 import omni.kit.commands
 
 def log(msg):
-    """Isaac Sim이 Python stdout을 리다이렉트하므로, stderr로 출력"""
     sys.stderr.write(msg + "\n")
     sys.stderr.flush()
 
-# 💡 Isaac Sim 5.1.0 API 임포트
+# 💡 Isaac Sim 5.1.0 API Import
 from isaacsim.core.api import World
 from isaacsim.core.api.robots import Robot
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.asset.importer.urdf import _urdf
 
-# 1. UDP 수신 세팅
+# 1. UDP Receive Setting
 UDP_IP = "127.0.0.1"
 UDP_PORT = 5005
 
@@ -28,22 +27,22 @@ sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((UDP_IP, UDP_PORT))
 sock.setblocking(False)
 
-log(f"Isaac Sim: UDP 수신 대기 중... 포트 {UDP_PORT}")
+log(f"Isaac Sim: UDP Receive Waiting... Port {UDP_PORT}")
 
-# 2. Isaac Sim World 세팅 (물리 스텝을 1/60초로 고정)
+# 2. Isaac Sim World Setting (Fixed Physics Step to 1/60s)
 world = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
 world.scene.add_default_ground_plane()
 
-# 3. 로컬 URDF에서 Allegro Hand 로드
+# 3. Load Allegro Hand from Local URDF
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 URDF_PATH = os.path.join(SCRIPT_DIR, "allegro_hand_right_local.urdf")
 
 if not os.path.exists(URDF_PATH):
-    raise FileNotFoundError(f"URDF 파일을 찾을 수 없습니다: {URDF_PATH}")
+    raise FileNotFoundError(f"NOT FOUND URDF: {URDF_PATH}")
 
-log(f"로컬 URDF 로딩: {URDF_PATH}")
+log(f"Loading Local URDF: {URDF_PATH}")
 
-# URDF Import 설정
+# URDF Import Setting
 import_config = _urdf.ImportConfig()
 import_config.merge_fixed_joints = False
 import_config.fix_base = True           # 손바닥(base_link)을 공중에 고정
@@ -71,13 +70,13 @@ log(f"✅ URDF 임포트 완료! Articulation Root: {prim_path}")
 # 4. Robot 객체 생성
 # 디버깅: 우선 기본 방향(손가락 위)으로 확인, 추후 물병잡기 자세로 변경 가능
 # X축 180도: [0, 1, 0, 0], 기본(위): [1, 0, 0, 0]
-hand_quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0])  # 기본 방향 (손가락 위)
+hand_quat_wxyz = np.array([0.0, 1.0, 0.0, 0.0])  # 기본 방향 (손가락 위)
 
 allegro = world.scene.add(
     Robot(
         prim_path=prim_path,
         name="allegro_hand",
-        position=np.array([0.0, 0.0, 0.5]),       # 지면에서 0.5m 위
+        position=np.array([0.0, 0.0, 0.7]),       # 지면에서 0.5m 위
         orientation=hand_quat_wxyz,                 # 손가락이 아래를 향하는 자세
     )
 )
@@ -110,14 +109,20 @@ current_target_angles = np.zeros(num_dof, dtype=np.float32)
 # 6. 메인 제어 루프
 try:
     while simulation_app.is_running():
-        try:
-            data, addr = sock.recvfrom(64)
-            received_angles = np.array(struct.unpack('16f', data), dtype=np.float32)
+        # UDP 버퍼의 모든 패킷을 읽어서 최신 것만 사용 (지연 방지)
+        latest_data = None
+        while True:
+            try:
+                data, addr = sock.recvfrom(64)
+                latest_data = data  # 계속 덮어써서 마지막(최신)만 남김
+            except BlockingIOError:
+                break  # 더 이상 읽을 패킷 없음
+
+        if latest_data is not None:
+            received_angles = np.array(struct.unpack('16f', latest_data), dtype=np.float32)
             # sender 순서 → Isaac Sim DOF 순서로 재매핑
             for s_idx in range(min(len(received_angles), len(sender_to_sim))):
                 current_target_angles[sender_to_sim[s_idx]] = received_angles[s_idx]
-        except BlockingIOError:
-            pass
 
         # 수신된 타겟 각도를 관절 위치 제어기(PD)에 인가
         allegro.get_articulation_controller().apply_action(

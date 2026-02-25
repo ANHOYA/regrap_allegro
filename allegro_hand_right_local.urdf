@@ -28,7 +28,21 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="allegro_hand_right">
   <!-- Base link -->
   <link name="hand_root">
-    <origin xyz="0 0 0"/>
+    <visual>
+      <geometry>
+        <box size="0.001 0.001 0.001"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.01"/>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7"/>
+    </inertial>
   </link>
   <joint name="root_to_base" type="fixed">
     <parent link="hand_root"/>
@@ -562,7 +576,6 @@
       <material name="black">
         <color rgba=".2 .2 .2 1"/>
       </material>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
     </visual>
     <collision>
       <geometry>
