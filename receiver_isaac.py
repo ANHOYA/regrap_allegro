@@ -6,8 +6,10 @@ import os
 import sys
 import socket
 import struct
+import time
 import numpy as np
 import omni.kit.commands
+import omni.appwindow
 
 def log(msg):
     sys.stderr.write(msg + "\n")
@@ -123,34 +125,128 @@ log(f"   매핑 테이블 (sender→sim): {sender_to_sim.tolist()}")
 # 16개 관절의 최신 타겟 각도를 저장할 배열
 current_target_angles = np.zeros(num_dof, dtype=np.float32)
 
-# 6. 메인 제어 루프
+# ── Recording Setup ──
+from recorder import DemoRecorder
+import cv2
+
+recorder = DemoRecorder(save_dir=os.path.join(SCRIPT_DIR, "demos"), image_subsample=6)
+
+# Image reception socket (port 5006)
+sock_img = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock_img.bind(("127.0.0.1", 5006))
+sock_img.setblocking(False)
+
+latest_image = None  # Most recent camera frame
+
+# Keyboard input via Isaac Sim's carb input system
+import carb.input
+input_iface = carb.input.acquire_input_interface()
+appwindow = omni.appwindow.get_default_app_window()
+keyboard = appwindow.get_keyboard()
+
+key_pressed = {"s": False, "r": False, "t": False, "q": False}
+
+def on_key_event(event):
+    if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+        key_char = str(event.input).split(".")[-1].lower()
+        if key_char in key_pressed:
+            key_pressed[key_char] = True
+    return True
+
+keyboard_sub = input_iface.subscribe_to_keyboard_events(keyboard, on_key_event)
+
+log("=" * 50)
+log("🎮 Controls: [S]=Start  [R]=Reset  [T]=Save  [Q]=Quit")
+log("=" * 50)
+
+frame_counter = 0
+
+# 6. Main Control Loop
 try:
     while simulation_app.is_running():
-        # UDP 버퍼의 모든 패킷을 읽어서 최신 것만 사용 (지연 방지)
+        # ── Read latest joint data ──
         latest_data = None
         while True:
             try:
                 data, addr = sock.recvfrom(64)
-                latest_data = data  # 계속 덮어써서 마지막(최신)만 남김
+                latest_data = data
             except BlockingIOError:
-                break  # 더 이상 읽을 패킷 없음
+                break
 
         if latest_data is not None:
             received_angles = np.array(struct.unpack('16f', latest_data), dtype=np.float32)
-            # sender 순서 → Isaac Sim DOF 순서로 재매핑
             for s_idx in range(min(len(received_angles), len(sender_to_sim))):
                 current_target_angles[sender_to_sim[s_idx]] = received_angles[s_idx]
 
-        # 수신된 타겟 각도를 관절 위치 제어기(PD)에 인가
+        # ── Read latest camera image ──
+        latest_img_data = None
+        while True:
+            try:
+                img_data, _ = sock_img.recvfrom(65535)
+                latest_img_data = img_data
+            except BlockingIOError:
+                break
+
+        if latest_img_data is not None:
+            jpg_array = np.frombuffer(latest_img_data, dtype=np.uint8)
+            decoded = cv2.imdecode(jpg_array, cv2.IMREAD_COLOR)
+            if decoded is not None:
+                latest_image = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+
+        # ── Keyboard State Machine ──
+        if key_pressed["s"] and not recorder.is_recording:
+            recorder.start()
+            log("🔴 Recording STARTED")
+            key_pressed["s"] = False
+
+        if key_pressed["r"] and recorder.is_recording:
+            recorder.discard()
+            log("⏹ Recording RESET (data discarded). Waiting 1s...")
+            time.sleep(1)
+            log("🎮 Ready. Press [S] to start recording.")
+            key_pressed["r"] = False
+
+        if key_pressed["t"] and recorder.is_recording:
+            saved_path = recorder.save(joint_names=list(joint_names))
+            if saved_path:
+                log(f"💾 Saved → {saved_path}")
+            else:
+                log("⚠ Nothing to save")
+            log("Waiting 1s...")
+            time.sleep(1)
+            log("🎮 Ready. Press [S] to start recording.")
+            key_pressed["t"] = False
+
+        if key_pressed["q"]:
+            if recorder.is_recording:
+                recorder.discard()
+            log("👋 Quit requested")
+            key_pressed["q"] = False
+            break
+
+        # ── Record frame ──
+        if recorder.is_recording:
+            recorder.add_frame(current_target_angles, latest_image)
+
+        # ── Apply joint positions ──
         allegro.get_articulation_controller().apply_action(
             ArticulationAction(joint_positions=current_target_angles)
         )
 
         world.step(render=True)
 
+        # ── Status display (every 60 frames) ──
+        frame_counter += 1
+        if frame_counter % 60 == 0:
+            log(recorder.status_str())
+
 except KeyboardInterrupt:
-    log("사용자에 의해 종료")
+    if recorder.is_recording:
+        recorder.discard()
+    log("Interrupted by user")
 
 finally:
+    input_iface.unsubscribe_to_keyboard_events(keyboard, keyboard_sub)
     sock.close()
+    sock_img.close()
     simulation_app.close()

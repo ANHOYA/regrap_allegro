@@ -5,10 +5,12 @@ import socket
 import numpy as np
 import struct
 
-# 1. UDP 통신 세팅 (Isaac Sim이 실행될 PC의 IP와 Port)
-UDP_IP = "127.0.0.1"  # 같은 PC에서 돌린다면 로컬호스트
-UDP_PORT = 5005
+# 1. UDP Setting
+UDP_IP = "127.0.0.1"
+UDP_PORT = 5005       # Joint angles
+UDP_PORT_IMG = 5006   # Camera images (JPEG compressed)
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock_img = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 # 2. MediaPipe Hands 세팅
 mp_hands = mp.solutions.hands
@@ -121,21 +123,49 @@ def retarget_to_allegro(landmarks):
     angles[11] = (ring_curl[2] + pinky_curl[2]) / 2
     
     # === 엄지 (joints 12-15) ===
-    thumb_curl = get_finger_curl(landmarks, [1, 2, 3, 4])
-    # 엄지 회전: 엄지 CMC와 검지 MCP 사이 벌림
-    angles[12] = get_finger_abduction(landmarks, 1, 5)
-    angles[13] = thumb_curl[0]
-    angles[14] = thumb_curl[1]
-    angles[15] = thumb_curl[2]
+    # Allegro 엄지 구조:
+    #   joint_12: opposition (축 -X, 범위 0.263~1.396) — 엄지가 손바닥 쪽으로 회전
+    #   joint_13: abduction  (축  Z, 범위 -0.105~1.163) — 엄지 벌림/모음
+    #   joint_14: MCP flexion (축 Y, 범위 -0.189~1.644) — 첫째 마디 굽힘
+    #   joint_15: IP flexion  (축 Y, 범위 -0.162~1.719) — 둘째 마디 굽힘
+    
+    wrist = np.array([landmarks[0].x, landmarks[0].y, landmarks[0].z])
+    thumb_cmc = np.array([landmarks[1].x, landmarks[1].y, landmarks[1].z])
+    thumb_mcp = np.array([landmarks[2].x, landmarks[2].y, landmarks[2].z])
+    thumb_ip = np.array([landmarks[3].x, landmarks[3].y, landmarks[3].z])
+    thumb_tip = np.array([landmarks[4].x, landmarks[4].y, landmarks[4].z])
+    index_mcp = np.array([landmarks[5].x, landmarks[5].y, landmarks[5].z])
+    middle_mcp = np.array([landmarks[9].x, landmarks[9].y, landmarks[9].z])
+    
+    # joint_12 (opposition): 엄지 끝이 손바닥 쪽으로 얼마나 가까운지
+    # 엄지 끝 ~ 중지 MCP 거리를 정규화하여 사용
+    palm_size = np.linalg.norm(middle_mcp - wrist) + 1e-8
+    thumb_palm_dist = np.linalg.norm(thumb_tip - middle_mcp) / palm_size
+    # 거리가 가까울수록 opposition이 큼 (스케일링: 0.263~1.396)
+    opposition = np.clip(1.5 - thumb_palm_dist * 1.0, 0.263, 1.396)
+    angles[12] = opposition
+    
+    # joint_13 (abduction): 엄지CMC-MCP 방향과 검지MCP 방향 사이 벌어짐
+    v_thumb = thumb_mcp - thumb_cmc
+    v_index = index_mcp - wrist
+    abd_angle = angle_between_vectors(v_thumb, v_index)
+    angles[13] = np.clip(abd_angle * 0.8 - 0.2, -0.105, 1.163)
+    
+    # joint_14 (MCP flexion): CMC→MCP와 MCP→IP 사이 각도 (게인 1.5x)
+    v1 = thumb_mcp - thumb_cmc
+    v2 = thumb_ip - thumb_mcp
+    angles[14] = np.clip(angle_between_vectors(v1, v2) * 1.5, -0.189, 1.644)
+    
+    # joint_15 (IP flexion): MCP→IP와 IP→TIP 사이 각도 (게인 1.5x)
+    v1 = thumb_ip - thumb_mcp
+    v2 = thumb_tip - thumb_ip
+    angles[15] = np.clip(angle_between_vectors(v1, v2) * 1.5, -0.162, 1.719)
     
     # 각도를 Allegro joint limits에 맞게 클리핑
-    # Abduction joints: roughly [-0.47, 0.47]
-    # Flexion joints: roughly [-0.2, 1.7]
     for i in [0, 4, 8]:    # abduction
         angles[i] = np.clip(angles[i], -0.47, 0.47)
-    for i in [1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15]:  # flexion
+    for i in [1, 2, 3, 5, 6, 7, 9, 10, 11]:  # finger flexion
         angles[i] = np.clip(angles[i], -0.2, 1.7)
-    angles[12] = np.clip(angles[12], 0.263, 1.396)  # thumb rotation
     
     return angles
 
@@ -166,6 +196,12 @@ try:
                 # struct.pack: 16개의 float(f)를 c 형식으로 변환 ('16f')
                 data_bytes = struct.pack('16f', *allegro_angles)
                 sock.sendto(data_bytes, (UDP_IP, UDP_PORT))
+
+        # Send camera image (JPEG compressed) via secondary UDP
+        _, jpeg_buf = cv2.imencode('.jpg', color_image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        jpeg_bytes = jpeg_buf.tobytes()
+        if len(jpeg_bytes) < 65000:  # UDP limit
+            sock_img.sendto(jpeg_bytes, (UDP_IP, UDP_PORT_IMG))
                 
         # 화면 출력
         cv2.imshow('RealSense D455 - Teleoperation Sender', color_image)
@@ -178,4 +214,5 @@ finally:
     pipeline.stop()
     cv2.destroyAllWindows()
     sock.close()
+    sock_img.close()
     print("통신 종료")
