@@ -72,7 +72,7 @@ log(f"✅ URDF 임포트 완료! Articulation Root: {prim_path}")
 # 4. Robot 객체 생성
 # X축 180도: [0, 1, 0, 0], 기본(위): [1, 0, 0, 0]
 hand_quat_wxyz = np.array([0.7071, 0.7071, 0.0, 0.0])  # 손가락 아래 방향
-hand_position = np.array([0.0, 0.0, 0.7])
+hand_position = np.array([0.0, 0.0, 0.1])
 
 # fix_base=True일 때 Robot()의 position/orientation이 적용 안 될 수 있으므로
 # USD API로 직접 root prim의 transform 설정
