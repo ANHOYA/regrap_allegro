@@ -103,12 +103,12 @@ allegro = world.scene.add(
 # 5. 타겟 오브젝트 로드
 from pxr import UsdPhysics, PhysxSchema, UsdShade, Usd
 
-can_prim_path = "/World/tomato_soup_can"
+can_prim_path = "/World/target_object"
 CAN_LOADED = False
 
 # 로컬 OBJ → USD 변환 후 로드
-OBJ_PATH = os.path.join(SCRIPT_DIR, "assets", "ycb", "005_tomato_soup_can", "google_16k", "textured.obj")
-WRAPPER_USD_PATH = os.path.join(SCRIPT_DIR, "assets", "ycb", "005_tomato_soup_can", "google_16k", "textured_converted.usd")
+OBJ_PATH = os.path.join(SCRIPT_DIR, "assets", "ycb", "002_master_chef_can", "google_16k", "textured.obj")
+WRAPPER_USD_PATH = os.path.join(SCRIPT_DIR, "assets", "ycb", "002_master_chef_can", "google_16k", "textured_converted.usd")
 
 if os.path.exists(OBJ_PATH):
     # OBJ를 감싸는 USD 래퍼 생성 (metersPerUnit=1.0, upAxis=Z)
@@ -117,7 +117,7 @@ if os.path.exists(OBJ_PATH):
         wrapper_stage = Usd.Stage.CreateNew(WRAPPER_USD_PATH)
         UsdGeom.SetStageMetersPerUnit(wrapper_stage, 1.0)
         UsdGeom.SetStageUpAxis(wrapper_stage, UsdGeom.Tokens.z)
-        root_prim = wrapper_stage.DefinePrim("/tomato_soup_can", "Xform")
+        root_prim = wrapper_stage.DefinePrim("/target_object", "Xform")
         root_prim.GetReferences().AddReference(
             "./textured.obj"  # 상대 경로 사용
         )
@@ -140,9 +140,11 @@ if os.path.exists(OBJ_PATH):
         UsdPhysics.RigidBodyAPI.Apply(can_prim)
         UsdPhysics.CollisionAPI.Apply(can_prim)
         mass_api = UsdPhysics.MassAPI.Apply(can_prim)
-        mass_api.CreateMassAttr(0.35)
+        mass_api.CreateMassAttr(0.414)  # Master Chef Can: 414g
         CAN_LOADED = True
-        log(f"🥫 Tomato Soup Can loaded at {can_prim_path}")
+        # 위치 설정 (기존 xformOp:translate 사용)
+        can_prim.GetAttribute("xformOp:translate").Set(Gf.Vec3d(0.1, -0.16, 0.0))
+        log(f"🥫 Master Chef Can loaded at {can_prim_path} pos=(0.1, -0.16, 0)")
         # 자식 prim 확인
         children = can_prim.GetChildren()
         log(f"   Children: {len(children)}")
