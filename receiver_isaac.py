@@ -282,6 +282,25 @@ try:
 
         if key_pressed["r"] and recorder.is_recording:
             recorder.discard()
+            # 타겟 오브젝트 원위치 복원
+            if CAN_LOADED:
+                try:
+                    can_prim.GetAttribute("xformOp:translate").Set(Gf.Vec3d(0.1, -0.16, 0.0))
+                    orient_attr = can_prim.GetAttribute("xformOp:orient")
+                    if orient_attr:
+                        try:
+                            orient_attr.Set(Gf.Quatf(1, 0, 0, 0))
+                        except Exception:
+                            orient_attr.Set(Gf.Quatd(1, 0, 0, 0))
+                    # 물리 속도 초기화
+                    vel = can_prim.GetAttribute("physics:velocity")
+                    if vel:
+                        vel.Set(Gf.Vec3f(0, 0, 0))
+                    ang = can_prim.GetAttribute("physics:angularVelocity")
+                    if ang:
+                        ang.Set(Gf.Vec3f(0, 0, 0))
+                except Exception as e:
+                    log(f"⚠ Reset error: {e}")
             log("⏹ Recording RESET (data discarded). Waiting 1s...")
             time.sleep(1)
             log("🎮 Ready. Press [S] to start recording.")
@@ -293,6 +312,24 @@ try:
                 log(f"💾 Saved → {saved_path}")
             else:
                 log("⚠ Nothing to save")
+            # 타겟 오브젝트 원위치 복원
+            if CAN_LOADED:
+                try:
+                    can_prim.GetAttribute("xformOp:translate").Set(Gf.Vec3d(0.1, -0.16, 0.0))
+                    orient_attr = can_prim.GetAttribute("xformOp:orient")
+                    if orient_attr:
+                        try:
+                            orient_attr.Set(Gf.Quatf(1, 0, 0, 0))
+                        except Exception:
+                            orient_attr.Set(Gf.Quatd(1, 0, 0, 0))
+                    vel = can_prim.GetAttribute("physics:velocity")
+                    if vel:
+                        vel.Set(Gf.Vec3f(0, 0, 0))
+                    ang = can_prim.GetAttribute("physics:angularVelocity")
+                    if ang:
+                        ang.Set(Gf.Vec3f(0, 0, 0))
+                except Exception as e:
+                    log(f"⚠ Reset error: {e}")
             log("Waiting 1s...")
             time.sleep(1)
             log("🎮 Ready. Press [S] to start recording.")
