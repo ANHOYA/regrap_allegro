@@ -76,7 +76,7 @@ hand_position = np.array([0.0, 0.0, 0.7])
 
 # fix_base=True일 때 Robot()의 position/orientation이 적용 안 될 수 있으므로
 # USD API로 직접 root prim의 transform 설정
-from pxr import UsdGeom, Gf
+from pxr import UsdGeom, Gf, Sdf
 stage = omni.usd.get_context().get_stage()
 # prim_path는 articulation root (예: /allegro_hand_right/root_joint)
 # 상위 prim (robot 루트)에 transform 적용
@@ -100,7 +100,86 @@ allegro = world.scene.add(
     )
 )
 
-# 5. 시뮬레이션 초기화 (여기서 물리 엔진이 로봇을 파싱합니다)
+# 5. 타겟 오브젝트 로드
+from pxr import UsdPhysics, PhysxSchema, UsdShade, Usd
+
+can_prim_path = "/World/tomato_soup_can"
+CAN_LOADED = False
+
+# 로컬 OBJ → USD 변환 후 로드
+OBJ_PATH = os.path.join(SCRIPT_DIR, "assets", "ycb", "005_tomato_soup_can", "google_16k", "textured.obj")
+WRAPPER_USD_PATH = os.path.join(SCRIPT_DIR, "assets", "ycb", "005_tomato_soup_can", "google_16k", "textured_converted.usd")
+
+if os.path.exists(OBJ_PATH):
+    # OBJ를 감싸는 USD 래퍼 생성 (metersPerUnit=1.0, upAxis=Z)
+    if not os.path.exists(WRAPPER_USD_PATH):
+        log(f"🔄 OBJ → USD 래퍼 생성 중: {WRAPPER_USD_PATH}")
+        wrapper_stage = Usd.Stage.CreateNew(WRAPPER_USD_PATH)
+        UsdGeom.SetStageMetersPerUnit(wrapper_stage, 1.0)
+        UsdGeom.SetStageUpAxis(wrapper_stage, UsdGeom.Tokens.z)
+        root_prim = wrapper_stage.DefinePrim("/tomato_soup_can", "Xform")
+        root_prim.GetReferences().AddReference(
+            "./textured.obj"  # 상대 경로 사용
+        )
+        wrapper_stage.SetDefaultPrim(root_prim)
+        wrapper_stage.GetRootLayer().Save()
+        log(f"✅ USD 래퍼 저장 완료")
+    else:
+        log(f"📁 기존 USD 래퍼 사용: {WRAPPER_USD_PATH}")
+
+    # 변환된 USD를 Isaac Sim에 로드
+    from isaacsim.core.utils.stage import add_reference_to_stage
+    add_reference_to_stage(WRAPPER_USD_PATH, can_prim_path)
+
+    for _ in range(10):
+        simulation_app.update()
+
+    can_prim = stage.GetPrimAtPath(can_prim_path)
+    if can_prim.IsValid():
+        # 물리 속성
+        UsdPhysics.RigidBodyAPI.Apply(can_prim)
+        UsdPhysics.CollisionAPI.Apply(can_prim)
+        mass_api = UsdPhysics.MassAPI.Apply(can_prim)
+        mass_api.CreateMassAttr(0.35)
+        CAN_LOADED = True
+        log(f"🥫 Tomato Soup Can loaded at {can_prim_path}")
+        # 자식 prim 확인
+        children = can_prim.GetChildren()
+        log(f"   Children: {len(children)}")
+        for c in children[:5]:
+            log(f"   Child: {c.GetPath()} Type: {c.GetTypeName()}")
+else:
+    log(f"⚠ OBJ not found: {OBJ_PATH}")
+
+# Fallback: OBJ도 없으면 실린더
+if not CAN_LOADED:
+    CAN_RADIUS = 0.033
+    CAN_HEIGHT = 0.1016
+    cylinder = UsdGeom.Cylinder.Define(stage, can_prim_path)
+    cylinder.CreateRadiusAttr(CAN_RADIUS)
+    cylinder.CreateHeightAttr(CAN_HEIGHT)
+    cylinder.CreateAxisAttr("Z")
+    xform = UsdGeom.Xformable(cylinder.GetPrim())
+    xform.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, CAN_HEIGHT / 2.0 + 0.01))
+    mat_path = "/World/can_material"
+    material = UsdShade.Material.Define(stage, mat_path)
+    shader = UsdShade.Shader.Define(stage, f"{mat_path}/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.8, 0.1, 0.1))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI(cylinder.GetPrim()).Bind(material)
+    UsdPhysics.RigidBodyAPI.Apply(cylinder.GetPrim())
+    UsdPhysics.CollisionAPI.Apply(cylinder.GetPrim())
+    mass_api = UsdPhysics.MassAPI.Apply(cylinder.GetPrim())
+    mass_api.CreateMassAttr(0.35)
+    CAN_LOADED = True
+    log(f"🥫 Cylinder fallback at {can_prim_path}")
+
+for _ in range(5):
+    simulation_app.update()
+
+# 6. 시뮬레이션 초기화 (여기서 물리 엔진이 로봇을 파싱합니다)
 world.reset()
 
 # 관절 정보 출력
