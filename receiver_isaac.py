@@ -37,7 +37,7 @@ world.scene.add_default_ground_plane()
 
 # 3. Load Allegro Hand from Local URDF
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-URDF_PATH = os.path.join(SCRIPT_DIR, "allegro_hand_right_local.urdf")
+URDF_PATH = os.path.join(SCRIPT_DIR, "src", "allegro", "allegro_hand_right_local.urdf")
 
 if not os.path.exists(URDF_PATH):
     raise FileNotFoundError(f"NOT FOUND URDF: {URDF_PATH}")
