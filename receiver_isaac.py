@@ -80,18 +80,31 @@ robot_root_path = prim_path.rsplit("/", 1)[0]  # e.g. /doosan_allegro
 arm_joint_names = ["arm_joint_1", "arm_joint_2", "arm_joint_3",
                    "arm_joint_4", "arm_joint_5", "arm_joint_6"]
 
+# Search the entire stage tree for joint prims (they're nested under parent links)
+def find_joint_prim(stage, root_path, joint_name):
+    """Recursively search for a joint prim by name under root_path"""
+    root = stage.GetPrimAtPath(root_path)
+    if not root.IsValid():
+        return None
+    for prim in Usd.PrimRange(root):
+        if prim.GetName() == joint_name:
+            return prim
+    return None
+
+from pxr import Usd
 for joint_name in arm_joint_names:
-    joint_prim_path = f"{robot_root_path}/{joint_name}"
-    joint_prim = stage_tmp.GetPrimAtPath(joint_prim_path)
-    if not joint_prim.IsValid():
-        log(f"⚠ Joint prim not found: {joint_prim_path}")
+    joint_prim = find_joint_prim(stage_tmp, robot_root_path, joint_name)
+    if joint_prim is None:
+        log(f"⚠ Joint prim not found anywhere: {joint_name}")
         continue
+    
+    log(f"   📍 Found joint: {joint_prim.GetPath()}")
     
     # Apply angular drive with high stiffness for position control
     drive_api = UsdPhysics.DriveAPI.Apply(joint_prim, "angular")
     drive_api.CreateTypeAttr("force")
     drive_api.CreateStiffnessAttr(1e4)   # Strong position tracking
-    drive_api.CreateDampingAttr(1e3)     # Reduce oscillations
+    drive_api.CreateDampingAttr(1e3)     # Reduce oscillations  
     drive_api.CreateMaxForceAttr(300.0)  # Max torque (Nm)
     log(f"   🔧 Drive configured: {joint_name} (stiffness=1e4, damping=1e3)")
 
@@ -235,14 +248,31 @@ wrist_target_pos = np.array([0.4, 0.0, 0.5], dtype=np.float32)  # Default: arm e
 wrist_target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # Identity
 wrist_data_valid = False
 
-# ── IK Solver Setup ──
-from ik_solver import DoosanIK
-ik_solver = DoosanIK()
+# ── IK Setup (simulation-based) ──
+# Find the end-effector prim in the USD stage
+ee_prim = find_joint_prim(stage, robot_root_path, "arm_link_6")
+if ee_prim:
+    ee_prim_path = str(ee_prim.GetPath())
+    log(f"🎯 EE link found: {ee_prim_path}")
+else:
+    ee_prim_path = f"{robot_root_path}/arm_link_6"
+    log(f"⚠ EE link not found by search, using: {ee_prim_path}")
 
-# Set initial arm "ready" pose (bent for grasping)
+def get_ee_world_pos():
+    """Read actual end-effector world position from simulation"""
+    p = stage.GetPrimAtPath(ee_prim_path)
+    if not p.IsValid():
+        return np.zeros(3)
+    xf = UsdGeom.Xformable(p)
+    T = xf.ComputeLocalToWorldTransform(0)
+    t = T.ExtractTranslation()
+    return np.array([t[0], t[1], t[2]], dtype=np.float64)
+
+# Initial arm pose: slightly bent forward
+INITIAL_ARM_POSE = np.array([0.0, 0.3, 0.5, 0.0, 0.3, 0.0], dtype=np.float32)
 for i, dof_idx in enumerate(arm_dof_indices):
-    current_target_angles[dof_idx] = ik_solver.default_pose[i]
-log(f"🎯 IK solver ready. Initial arm pose: {ik_solver.default_pose.tolist()}")
+    current_target_angles[dof_idx] = INITIAL_ARM_POSE[i]
+log(f"🎯 IK ready. Initial arm q: {INITIAL_ARM_POSE.tolist()}")
 
 # ── Recording Setup ──
 from recorder import DemoRecorder
@@ -396,12 +426,39 @@ try:
         if recorder.is_recording:
             recorder.add_frame(current_target_angles, latest_image)
 
-        # ── IK for arm joints ──
+        # ── IK for arm joints (simulation-based) ──
         if wrist_data_valid:
-            q_arm = np.array([current_target_angles[idx] for idx in arm_dof_indices], dtype=np.float32)
-            q_new = ik_solver.solve_ik(q_arm, wrist_target_pos, max_iter=3, gain=0.8)
-            for i, dof_idx in enumerate(arm_dof_indices):
-                current_target_angles[dof_idx] = q_new[i]
+            ee_pos = get_ee_world_pos()
+            error = wrist_target_pos.astype(np.float64) - ee_pos
+            err_norm = np.linalg.norm(error)
+            
+            if err_norm > 0.01:  # Only move if >1cm error
+                # Clamp step size
+                max_step = 0.3
+                if err_norm > max_step:
+                    error = error * (max_step / err_norm)
+                
+                # Simple proportional joint update using actual EE feedback
+                # Read current arm joints
+                q_arm = np.array([current_target_angles[idx] for idx in arm_dof_indices])
+                
+                # Heuristic Jacobian mapping for 6-DOF arm:
+                # joint_1 = base yaw  → affects x,y
+                # joint_2 = shoulder  → affects x,z  
+                # joint_3 = elbow     → affects x,z
+                # joint_5 = wrist pitch → affects z
+                gain = 0.5
+                q_arm[0] += np.arctan2(error[1], max(error[0], 0.1)) * gain * 0.3  # yaw
+                q_arm[1] += error[2] * gain  # shoulder → z
+                q_arm[2] += -error[0] * gain  # elbow → x (forward)
+                q_arm[4] += error[2] * gain * 0.3  # wrist pitch → z fine
+                
+                # Clamp to limits
+                for i in range(6):
+                    q_arm[i] = np.clip(q_arm[i], -2.617, 2.617)
+                
+                for i, dof_idx in enumerate(arm_dof_indices):
+                    current_target_angles[dof_idx] = q_arm[i]
 
         # ── Apply joint positions ──
         allegro.get_articulation_controller().apply_action(
@@ -415,11 +472,10 @@ try:
         if frame_counter % 60 == 0:
             log(recorder.status_str())
             if wrist_data_valid:
-                q_arm_dbg = np.array([current_target_angles[idx] for idx in arm_dof_indices])
-                _, _, fk_pos = ik_solver.forward_kinematics(q_arm_dbg)
-                log(f"   🎯 wrist_target={[round(x,3) for x in wrist_target_pos]}")
-                log(f"   📍 FK ee_pos={[round(x,3) for x in fk_pos]}")
-                log(f"   📐 arm_q={[round(float(x),2) for x in q_arm_dbg]}")
+                ee_pos = get_ee_world_pos()
+                log(f"   🎯 target={[round(float(x),3) for x in wrist_target_pos]}")
+                log(f"   📍 actual_ee={[round(x,3) for x in ee_pos]}")
+                log(f"   📐 arm_q={[round(float(current_target_angles[idx]),2) for idx in arm_dof_indices]}")
 
 except KeyboardInterrupt:
     if recorder.is_recording:
