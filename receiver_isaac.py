@@ -206,6 +206,92 @@ wrist_target_pos = np.array([0.4, 0.0, 0.5], dtype=np.float32)  # Default: arm e
 wrist_target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # Identity
 wrist_data_valid = False
 
+# ── IK Solver Setup ──
+# End-effector prim path for reading world pose
+ee_prim_path = prim_path.rsplit('/', 1)[0] + "/arm_link_6"
+log(f"🎯 IK target link: {ee_prim_path}")
+
+# Arm joint limits from URDF (all ±2.617 rad for A0509)
+arm_joint_limits = np.array([[-2.617, 2.617]] * 6)
+# Current arm joint targets
+arm_joint_targets = np.zeros(6, dtype=np.float32)
+
+def get_ee_world_pos():
+    """Get end-effector world position from USD stage"""
+    ee_prim = stage.GetPrimAtPath(ee_prim_path)
+    if not ee_prim.IsValid():
+        return np.zeros(3)
+    xform = UsdGeom.Xformable(ee_prim)
+    world_transform = xform.ComputeLocalToWorldTransform(0)
+    pos = world_transform.ExtractTranslation()
+    return np.array([pos[0], pos[1], pos[2]], dtype=np.float64)
+
+def compute_numerical_jacobian(robot, arm_indices, delta=0.001):
+    """Compute 3x6 position Jacobian via finite differences"""
+    J = np.zeros((3, len(arm_indices)))
+    current_joints = allegro.get_joint_positions()
+    base_pos = get_ee_world_pos()
+    
+    for i, dof_idx in enumerate(arm_indices):
+        # Perturb joint
+        perturbed = current_joints.copy()
+        perturbed[dof_idx] += delta
+        allegro.set_joint_positions(perturbed)
+        for _ in range(1):  # Minimal update for FK
+            simulation_app.update()
+        new_pos = get_ee_world_pos()
+        J[:, i] = (new_pos - base_pos) / delta
+        
+    # Restore original
+    allegro.set_joint_positions(current_joints)
+    return J
+
+def simple_ik_step(target_pos, arm_indices, gain=0.5, damping=0.05):
+    """One step of damped least-squares IK (position only)"""
+    global arm_joint_targets
+    
+    ee_pos = get_ee_world_pos()
+    error = target_pos - ee_pos
+    error_norm = np.linalg.norm(error)
+    
+    if error_norm < 0.005:  # Close enough (5mm)
+        return
+    
+    # Clamp error to prevent huge jumps
+    max_step = 0.05  # Max 5cm per step
+    if error_norm > max_step:
+        error = error * (max_step / error_norm)
+    
+    # Numerical Jacobian is expensive; use a simpler approach:
+    # Direct joint-space proportional control toward target
+    # Map Cartesian error to joint velocity via transpose Jacobian approximation
+    # For now, use a simple proportional mapping
+    
+    # Simple approach: move each joint proportionally to reduce error
+    current_joints = np.array([current_target_angles[idx] for idx in arm_indices])
+    
+    # Scale the position error into joint-space increments
+    # This is a rough approximation; joints 1-3 affect position most
+    dq = np.zeros(6)
+    dq[0] = -error[1] * gain  # Joint 1 (yaw) ← y-error
+    dq[1] = -error[2] * gain  # Joint 2 (pitch) ← z-error  
+    dq[2] = error[0] * gain * 0.5  # Joint 3 ← x-error
+    dq[3] = 0  # Joint 4 (wrist) — minimal contribution
+    dq[4] = 0  # Joint 5 — minimal contribution
+    dq[5] = 0  # Joint 6 — minimal contribution
+    
+    arm_joint_targets = current_joints + dq
+    
+    # Clamp to joint limits
+    for i in range(6):
+        arm_joint_targets[i] = np.clip(arm_joint_targets[i], 
+                                        arm_joint_limits[i, 0], 
+                                        arm_joint_limits[i, 1])
+    
+    # Apply to target angles
+    for i, dof_idx in enumerate(arm_indices):
+        current_target_angles[dof_idx] = arm_joint_targets[i]
+
 # ── Recording Setup ──
 from recorder import DemoRecorder
 import cv2
@@ -357,6 +443,10 @@ try:
         # ── Record frame ──
         if recorder.is_recording:
             recorder.add_frame(current_target_angles, latest_image)
+
+        # ── IK for arm joints ──
+        if wrist_data_valid:
+            simple_ik_step(wrist_target_pos, arm_dof_indices, gain=0.3)
 
         # ── Apply joint positions ──
         allegro.get_articulation_controller().apply_action(
