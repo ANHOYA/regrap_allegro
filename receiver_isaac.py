@@ -198,8 +198,13 @@ for sender_idx in range(16):
         sender_to_sim[sender_idx] = 0  # fallback
 log(f"   매핑 테이블 (sender→sim): {sender_to_sim.tolist()}")
 
-# 16개 관절의 최신 타겟 각도를 저장할 배열
+# 22개 관절의 최신 타겟 각도를 저장할 배열
 current_target_angles = np.zeros(num_dof, dtype=np.float32)
+
+# Wrist target pose storage (received from sender)
+wrist_target_pos = np.array([0.4, 0.0, 0.5], dtype=np.float32)  # Default: arm extended
+wrist_target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # Identity
+wrist_data_valid = False
 
 # ── Recording Setup ──
 from recorder import DemoRecorder
@@ -244,15 +249,27 @@ try:
         latest_data = None
         while True:
             try:
-                data, addr = sock.recvfrom(64)
+                data, addr = sock.recvfrom(256)
                 latest_data = data
             except BlockingIOError:
                 break
 
         if latest_data is not None:
-            received_angles = np.array(struct.unpack('16f', latest_data), dtype=np.float32)
-            for s_idx in range(min(len(received_angles), len(sender_to_sim))):
-                current_target_angles[sender_to_sim[s_idx]] = received_angles[s_idx]
+            # Parse 23f: 16 finger + 3 wrist_pos + 4 wrist_quat
+            if len(latest_data) >= 92:  # 23 * 4 bytes
+                all_values = np.array(struct.unpack('23f', latest_data[:92]), dtype=np.float32)
+                received_angles = all_values[:16]
+                wrist_target_pos[:] = all_values[16:19]
+                wrist_target_quat[:] = all_values[19:23]
+                wrist_data_valid = True
+            elif len(latest_data) >= 64:  # Fallback: 16f only (backward compat)
+                received_angles = np.array(struct.unpack('16f', latest_data[:64]), dtype=np.float32)
+            else:
+                received_angles = None
+            
+            if received_angles is not None:
+                for s_idx in range(min(len(received_angles), len(sender_to_sim))):
+                    current_target_angles[sender_to_sim[s_idx]] = received_angles[s_idx]
 
         # ── Read latest camera image ──
         latest_img_data = None

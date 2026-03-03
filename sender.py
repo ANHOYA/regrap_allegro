@@ -21,11 +21,19 @@ hands = mp_hands.Hands(
     max_num_hands=1
 )
 
-# 3. Intel RealSense D455 파이프라인 세팅
+# 3. Intel RealSense D455 Pipeline
 pipeline = rs.pipeline()
 config = rs.config()
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 60) # 60fps로 부드럽게
-pipeline.start(config)
+config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 60)
+config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 60)
+profile = pipeline.start(config)
+
+# Depth → Color alignment for accurate 3D deprojection
+align = rs.align(rs.stream.color)
+
+# Camera intrinsics (retrieved after pipeline start)
+color_stream = profile.get_stream(rs.stream.color)
+intrinsics = color_stream.as_video_stream_profile().get_intrinsics()
 
 print(f"UDP 송신 시작: {UDP_IP}:{UDP_PORT}")
 
@@ -184,30 +192,77 @@ def retarget_to_allegro(landmarks):
 
 try:
     while True:
-        # 프레임 받아오기
+        # Grab frames and align depth to color
         frames = pipeline.wait_for_frames()
-        color_frame = frames.get_color_frame()
-        if not color_frame:
+        aligned_frames = align.process(frames)
+        color_frame = aligned_frames.get_color_frame()
+        depth_frame = aligned_frames.get_depth_frame()
+        if not color_frame or not depth_frame:
             continue
 
-        # OpenCV 이미지로 변환
+        # Convert to OpenCV image
         color_image = np.asanyarray(color_frame.get_data())
         image_rgb = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
 
-        # MediaPipe로 손 추적
+        # MediaPipe hand tracking
         results = hands.process(image_rgb)
 
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
-                # 시각화 (화면에 관절 그리기)
                 mp_drawing.draw_landmarks(color_image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
                 
-                # 16개 Allegro 관절 각도 추출
+                # 16 Allegro finger joint angles
                 allegro_angles = retarget_to_allegro(hand_landmarks.landmark)
                 
-                # float32 배열(16개)을 바이트 데이터로 패키징하여 UDP 송신
-                # struct.pack: 16개의 float(f)를 c 형식으로 변환 ('16f')
-                data_bytes = struct.pack('16f', *allegro_angles)
+                # Wrist 3D position from depth
+                lm = hand_landmarks.landmark
+                wrist = lm[0]  # WRIST landmark
+                h, w = color_image.shape[:2]
+                px, py = int(wrist.x * w), int(wrist.y * h)
+                px = np.clip(px, 0, w - 1)
+                py = np.clip(py, 0, h - 1)
+                depth_m = depth_frame.get_distance(px, py)
+                
+                if depth_m > 0.1 and depth_m < 2.0:  # Valid depth range
+                    # Deproject pixel + depth to 3D camera coords
+                    point_cam = rs.rs2_deproject_pixel_to_point(intrinsics, [px, py], depth_m)
+                    # Camera frame (x-right, y-down, z-forward) -> Robot frame (x-forward, y-left, z-up)
+                    wrist_pos = np.array([point_cam[2], -point_cam[0], -point_cam[1]])
+                else:
+                    wrist_pos = np.array([0.5, 0.0, 0.3])  # Default safe position
+                
+                # Wrist orientation from palm plane
+                wrist_pt = np.array([lm[0].x, lm[0].y, lm[0].z])
+                index_mcp = np.array([lm[5].x, lm[5].y, lm[5].z])
+                pinky_mcp = np.array([lm[17].x, lm[17].y, lm[17].z])
+                middle_mcp = np.array([lm[9].x, lm[9].y, lm[9].z])
+                
+                palm_forward = middle_mcp - wrist_pt
+                palm_forward = palm_forward / (np.linalg.norm(palm_forward) + 1e-8)
+                palm_right = index_mcp - pinky_mcp
+                palm_right = palm_right / (np.linalg.norm(palm_right) + 1e-8)
+                palm_normal = np.cross(palm_forward, palm_right)
+                palm_normal = palm_normal / (np.linalg.norm(palm_normal) + 1e-8)
+                # Re-orthogonalize
+                palm_right = np.cross(palm_normal, palm_forward)
+                
+                # Rotation matrix -> quaternion (w, x, y, z)
+                R = np.stack([palm_forward, palm_right, palm_normal], axis=1)
+                # Ensure proper rotation matrix
+                tr = R[0,0] + R[1,1] + R[2,2]
+                if tr > 0:
+                    s = 0.5 / np.sqrt(tr + 1.0)
+                    qw = 0.25 / s
+                    qx = (R[2,1] - R[1,2]) * s
+                    qy = (R[0,2] - R[2,0]) * s
+                    qz = (R[1,0] - R[0,1]) * s
+                else:
+                    qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
+                wrist_quat = np.array([qw, qx, qy, qz])
+                wrist_quat = wrist_quat / (np.linalg.norm(wrist_quat) + 1e-8)
+                
+                # Pack and send: 16 finger + 3 pos + 4 quat = 23 floats
+                data_bytes = struct.pack('23f', *allegro_angles, *wrist_pos, *wrist_quat)
                 sock.sendto(data_bytes, (UDP_IP, UDP_PORT))
 
         # Send camera image (JPEG compressed) via secondary UDP
