@@ -35,9 +35,9 @@ log(f"Isaac Sim: UDP Receive Waiting... Port {UDP_PORT}")
 world = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
 world.scene.add_default_ground_plane()
 
-# 3. Load Allegro Hand from Local URDF
+# 3. Load Doosan A0509 + Allegro Hand Combined URDF
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-URDF_PATH = os.path.join(SCRIPT_DIR, "src", "allegro", "allegro_hand_right_local.urdf")
+URDF_PATH = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_combined.urdf")
 
 if not os.path.exists(URDF_PATH):
     raise FileNotFoundError(f"NOT FOUND URDF: {URDF_PATH}")
@@ -47,7 +47,7 @@ log(f"Loading Local URDF: {URDF_PATH}")
 # URDF Import Setting
 import_config = _urdf.ImportConfig()
 import_config.merge_fixed_joints = False
-import_config.fix_base = True           # 손바닥(base_link)을 공중에 고정
+import_config.fix_base = True           # 두산 베이스를 바닥에 고정
 import_config.make_default_prim = False
 import_config.create_physics_scene = False  # World가 이미 physics scene을 만들었으므로
 
@@ -70,33 +70,19 @@ for _ in range(5):
 log(f"✅ URDF 임포트 완료! Articulation Root: {prim_path}")
 
 # 4. Robot 객체 생성
-# X축 180도: [0, 1, 0, 0], 기본(위): [1, 0, 0, 0]
-hand_quat_wxyz = np.array([0.7071, 0.7071, 0.0, 0.0])  # 손가락 아래 방향
-hand_position = np.array([0.0, 0.0, 0.1])
-
-# fix_base=True일 때 Robot()의 position/orientation이 적용 안 될 수 있으므로
-# USD API로 직접 root prim의 transform 설정
 from pxr import UsdGeom, Gf, Sdf
 stage = omni.usd.get_context().get_stage()
-# prim_path는 articulation root (예: /allegro_hand_right/root_joint)
-# 상위 prim (robot 루트)에 transform 적용
-robot_root_path = prim_path.rsplit("/", 1)[0]  # /allegro_hand_right
-robot_prim = stage.GetPrimAtPath(robot_root_path)
-if robot_prim.IsValid():
-    xform = UsdGeom.Xformable(robot_prim)
-    xform.ClearXformOpOrder()
-    xform.AddTranslateOp().Set(Gf.Vec3d(*hand_position.tolist()))
-    xform.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
-        Gf.Quatd(float(hand_quat_wxyz[0]), float(hand_quat_wxyz[1]), float(hand_quat_wxyz[2]), float(hand_quat_wxyz[3]))
-    )
-    log(f"📐 Transform 설정: pos={hand_position}, quat={hand_quat_wxyz}")
+
+# 통합 로봇: 두산 베이스가 바닥에 고정, 손은 arm_link_6 끝에 달림
+robot_position = np.array([0.0, 0.0, 0.0])
+robot_quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0])
 
 allegro = world.scene.add(
     Robot(
         prim_path=prim_path,
-        name="allegro_hand",
-        position=hand_position,
-        orientation=hand_quat_wxyz,
+        name="doosan_allegro",
+        position=robot_position,
+        orientation=robot_quat_wxyz,
     )
 )
 
@@ -187,20 +173,29 @@ world.reset()
 # 관절 정보 출력
 num_dof = allegro.num_dof
 joint_names = allegro.dof_names
-log(f"🤖 Allegro Hand 로드 성공! DOF 수: {num_dof}")
-log(f"   관절 목록: {joint_names}")
+log(f"🤖 Combined Robot 로드 성공! DOF 수: {num_dof}")
+log(f"   관절 목록: {list(joint_names)}")
 
-# sender → Isaac Sim DOF 순서 매핑 테이블 구축
-# sender는 joint_0 ~ joint_15를 순서대로 보냄
-# Isaac Sim의 DOF 순서는 다를 수 있으므로 역매핑 필요
-sender_to_sim = np.zeros(min(num_dof, 16), dtype=np.int32)
-for sender_idx in range(min(num_dof, 16)):
-    target_name = f"joint_{sender_idx}"
+# Arm DOF 인덱스와 Hand DOF 인덱스 분리
+arm_dof_indices = []
+hand_dof_indices = []
+for i, name in enumerate(joint_names):
+    if name.startswith("arm_"):
+        arm_dof_indices.append(i)
+    elif name.startswith("hand_"):
+        hand_dof_indices.append(i)
+log(f"   Arm DOFs: {len(arm_dof_indices)}, Hand DOFs: {len(hand_dof_indices)}")
+
+# sender → Isaac Sim DOF 순서 매핑 테이블 구축 (hand_joint_X prefix)
+sender_to_sim = np.zeros(16, dtype=np.int32)
+for sender_idx in range(16):
+    target_name = f"hand_joint_{sender_idx}"
     if target_name in joint_names:
         sim_idx = list(joint_names).index(target_name)
         sender_to_sim[sender_idx] = sim_idx
     else:
-        sender_to_sim[sender_idx] = sender_idx  # fallback
+        log(f"   ⚠ hand_joint_{sender_idx} not found in DOF list")
+        sender_to_sim[sender_idx] = 0  # fallback
 log(f"   매핑 테이블 (sender→sim): {sender_to_sim.tolist()}")
 
 # 16개 관절의 최신 타겟 각도를 저장할 배열
