@@ -53,8 +53,8 @@ class DoosanIK:
         # Joint limits (all ±2.617 rad for A0509)
         self.joint_limits = np.array([[-2.617, 2.617]] * 6)
         
-        # Default "ready" pose: arm bent, hand pointing down
-        self.default_pose = np.array([0.0, -0.5, 1.2, 0.0, -0.7, 0.0])
+        # Default "ready" pose: arm bent forward, hand pointing down toward table
+        self.default_pose = np.array([0.0, 0.8, 1.0, 0.0, 0.8, 0.0])
 
     def forward_kinematics(self, q):
         """
