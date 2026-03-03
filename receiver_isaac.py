@@ -69,6 +69,35 @@ for _ in range(5):
 
 log(f"✅ URDF 임포트 완료! Articulation Root: {prim_path}")
 
+# ── Configure arm joint drives (CRITICAL for position control) ──
+# Doosan URDF lacks <dynamics> tags, so joints have no drive strength
+# Without proper stiffness, apply_action(joint_positions=...) has ZERO effect
+from pxr import UsdPhysics, PhysxSchema
+
+stage_tmp = omni.usd.get_context().get_stage()
+robot_root_path = prim_path.rsplit("/", 1)[0]  # e.g. /doosan_allegro
+
+arm_joint_names = ["arm_joint_1", "arm_joint_2", "arm_joint_3",
+                   "arm_joint_4", "arm_joint_5", "arm_joint_6"]
+
+for joint_name in arm_joint_names:
+    joint_prim_path = f"{robot_root_path}/{joint_name}"
+    joint_prim = stage_tmp.GetPrimAtPath(joint_prim_path)
+    if not joint_prim.IsValid():
+        log(f"⚠ Joint prim not found: {joint_prim_path}")
+        continue
+    
+    # Apply angular drive with high stiffness for position control
+    drive_api = UsdPhysics.DriveAPI.Apply(joint_prim, "angular")
+    drive_api.CreateTypeAttr("force")
+    drive_api.CreateStiffnessAttr(1e4)   # Strong position tracking
+    drive_api.CreateDampingAttr(1e3)     # Reduce oscillations
+    drive_api.CreateMaxForceAttr(300.0)  # Max torque (Nm)
+    log(f"   🔧 Drive configured: {joint_name} (stiffness=1e4, damping=1e3)")
+
+for _ in range(3):
+    simulation_app.update()
+
 # 4. Robot 객체 생성
 from pxr import UsdGeom, Gf, Sdf
 stage = omni.usd.get_context().get_stage()
@@ -385,6 +414,12 @@ try:
         frame_counter += 1
         if frame_counter % 60 == 0:
             log(recorder.status_str())
+            if wrist_data_valid:
+                q_arm_dbg = np.array([current_target_angles[idx] for idx in arm_dof_indices])
+                _, _, fk_pos = ik_solver.forward_kinematics(q_arm_dbg)
+                log(f"   🎯 wrist_target={[round(x,3) for x in wrist_target_pos]}")
+                log(f"   📍 FK ee_pos={[round(x,3) for x in fk_pos]}")
+                log(f"   📐 arm_q={[round(float(x),2) for x in q_arm_dbg]}")
 
 except KeyboardInterrupt:
     if recorder.is_recording:
