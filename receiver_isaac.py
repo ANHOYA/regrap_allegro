@@ -268,11 +268,13 @@ def get_ee_world_pos():
     t = T.ExtractTranslation()
     return np.array([t[0], t[1], t[2]], dtype=np.float64)
 
-# Initial arm pose: slightly bent forward
-INITIAL_ARM_POSE = np.array([0.0, 0.3, 0.5, 0.0, 0.3, 0.0], dtype=np.float32)
+# Initial arm pose: bent forward, hand pointing down toward table (for grasping)
+# joints: [base_yaw, shoulder, elbow, wrist_roll, wrist_pitch, wrist_yaw]
+INITIAL_ARM_POSE = np.array([0.0, 0.7, 1.3, 0.0, 1.0, 0.0], dtype=np.float32)
 for i, dof_idx in enumerate(arm_dof_indices):
     current_target_angles[dof_idx] = INITIAL_ARM_POSE[i]
-log(f"🎯 IK ready. Initial arm q: {INITIAL_ARM_POSE.tolist()}")
+log(f"🎯 Arm pose set (fixed): {INITIAL_ARM_POSE.tolist()}")
+log(f"   📌 EE initial pos: {[round(x,3) for x in get_ee_world_pos()]}")
 
 # ── Recording Setup ──
 from recorder import DemoRecorder
@@ -426,39 +428,9 @@ try:
         if recorder.is_recording:
             recorder.add_frame(current_target_angles, latest_image)
 
-        # ── IK for arm joints (simulation-based) ──
-        if wrist_data_valid:
-            ee_pos = get_ee_world_pos()
-            error = wrist_target_pos.astype(np.float64) - ee_pos
-            err_norm = np.linalg.norm(error)
-            
-            if err_norm > 0.01:  # Only move if >1cm error
-                # Clamp step size
-                max_step = 0.3
-                if err_norm > max_step:
-                    error = error * (max_step / err_norm)
-                
-                # Simple proportional joint update using actual EE feedback
-                # Read current arm joints
-                q_arm = np.array([current_target_angles[idx] for idx in arm_dof_indices])
-                
-                # Heuristic Jacobian mapping for 6-DOF arm:
-                # joint_1 = base yaw  → affects x,y
-                # joint_2 = shoulder  → affects x,z  
-                # joint_3 = elbow     → affects x,z
-                # joint_5 = wrist pitch → affects z
-                gain = 0.5
-                q_arm[0] += np.arctan2(error[1], max(error[0], 0.1)) * gain * 0.3  # yaw
-                q_arm[1] += error[2] * gain  # shoulder → z
-                q_arm[2] += -error[0] * gain  # elbow → x (forward)
-                q_arm[4] += error[2] * gain * 0.3  # wrist pitch → z fine
-                
-                # Clamp to limits
-                for i in range(6):
-                    q_arm[i] = np.clip(q_arm[i], -2.617, 2.617)
-                
-                for i, dof_idx in enumerate(arm_dof_indices):
-                    current_target_angles[dof_idx] = q_arm[i]
+        # ── Arm IK (DISABLED — using fixed pose for now) ──
+        # TODO: Implement proper IK (Lula or numerical Jacobian) 
+        # The arm holds INITIAL_ARM_POSE; only fingers move via teleoperation
 
         # ── Apply joint positions ──
         allegro.get_articulation_controller().apply_action(
