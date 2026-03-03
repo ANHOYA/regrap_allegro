@@ -28,7 +28,7 @@ YCB_OBJECTS = {
 # ═══════════════════════════════════════════
 #  ★ Change this to switch objects ★
 # ═══════════════════════════════════════════
-ACTIVE_OBJECT = "tomato_soup_can"
+ACTIVE_OBJECT = "master_chef_can"
 
 
 def get_active_object():
