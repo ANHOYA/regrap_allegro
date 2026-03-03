@@ -136,20 +136,33 @@ def retarget_to_allegro(landmarks):
     thumb_tip = np.array([landmarks[4].x, landmarks[4].y, landmarks[4].z])
     index_mcp = np.array([landmarks[5].x, landmarks[5].y, landmarks[5].z])
     middle_mcp = np.array([landmarks[9].x, landmarks[9].y, landmarks[9].z])
+    ring_mcp = np.array([landmarks[13].x, landmarks[13].y, landmarks[13].z])
     
-    # joint_12 (opposition): 엄지 끝이 손바닥 쪽으로 얼마나 가까운지
-    # 엄지 끝 ~ 중지 MCP 거리를 정규화하여 사용
-    palm_size = np.linalg.norm(middle_mcp - wrist) + 1e-8
-    thumb_palm_dist = np.linalg.norm(thumb_tip - middle_mcp) / palm_size
-    # 거리가 가까울수록 opposition이 큼 (스케일링: 0.263~1.396)
-    opposition = np.clip(1.5 - thumb_palm_dist * 1.0, 0.263, 1.396)
-    angles[12] = opposition
+    # 손바닥 좌표계 구성 (forward=손가락방향, right=엄지쪽, normal=손바닥 수직)
+    palm_forward = middle_mcp - wrist
+    palm_forward = palm_forward / (np.linalg.norm(palm_forward) + 1e-8)
+    v_aux = ring_mcp - wrist
+    palm_normal = np.cross(palm_forward, v_aux)
+    palm_normal = palm_normal / (np.linalg.norm(palm_normal) + 1e-8)
+    palm_right = np.cross(palm_normal, palm_forward)
+    palm_right = palm_right / (np.linalg.norm(palm_right) + 1e-8)
     
-    # joint_13 (abduction): 엄지CMC-MCP 방향과 검지MCP 방향 사이 벌어짐
-    v_thumb = thumb_mcp - thumb_cmc
-    v_index = index_mcp - wrist
-    abd_angle = angle_between_vectors(v_thumb, v_index)
-    angles[13] = np.clip(abd_angle * 0.8 - 0.2, -0.105, 1.163)
+    # 엄지 방향 벡터 (CMC → MCP) 를 손바닥 좌표계로 분해
+    v_thumb_base = thumb_mcp - thumb_cmc
+    v_thumb_base = v_thumb_base / (np.linalg.norm(v_thumb_base) + 1e-8)
+    thumb_fwd = np.dot(v_thumb_base, palm_forward)    # 손가락 방향 성분
+    thumb_right = np.dot(v_thumb_base, palm_right)     # 옆 방향 성분
+    thumb_up = np.dot(v_thumb_base, palm_normal)       # 수직 성분
+    
+    # joint_12 (opposition): 엄지가 손바닥 평면 내에서 손가락 쪽으로 얼마나 회전했는지
+    # 옆으로 뻗으면 → opposition 최소, 손가락 쪽으로 회전하면 → opposition 최대
+    opp_angle = np.arctan2(max(thumb_fwd, 0), abs(thumb_right) + 1e-8)
+    # 0 (옆으로 뻗음) → 0.263,  π/2 (손가락과 평행) → 1.396
+    angles[12] = np.clip(0.263 + opp_angle * (1.396 - 0.263) / (np.pi / 2), 0.263, 1.396)
+    
+    # joint_13 (abduction): 엄지가 손바닥 법선 방향으로 얼마나 튀어나왔는지
+    # 손바닥과 수평 → 0, 손바닥에서 수직으로 튀어나옴 → 최대
+    angles[13] = np.clip(abs(thumb_up) * 1.5, -0.105, 1.163)
     
     # joint_14 (MCP flexion): CMC→MCP와 MCP→IP 사이 각도 (게인 1.5x)
     v1 = thumb_mcp - thumb_cmc

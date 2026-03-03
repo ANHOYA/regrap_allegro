@@ -102,13 +102,15 @@ allegro = world.scene.add(
 
 # 5. 타겟 오브젝트 로드
 from pxr import UsdPhysics, PhysxSchema, UsdShade, Usd
+from target_object import get_active_object
+
+target_cfg = get_active_object()
+OBJ_PATH = target_cfg["obj_path"]
+WRAPPER_USD_PATH = target_cfg["usd_path"]
+TARGET_POS = Gf.Vec3d(*target_cfg["position"])
 
 can_prim_path = "/World/target_object"
 CAN_LOADED = False
-
-# 로컬 OBJ → USD 변환 후 로드
-OBJ_PATH = os.path.join(SCRIPT_DIR, "assets", "ycb", "002_master_chef_can", "google_16k", "textured.obj")
-WRAPPER_USD_PATH = os.path.join(SCRIPT_DIR, "assets", "ycb", "002_master_chef_can", "google_16k", "textured_converted.usd")
 
 if os.path.exists(OBJ_PATH):
     # OBJ를 감싸는 USD 래퍼 생성 (metersPerUnit=1.0, upAxis=Z)
@@ -118,9 +120,7 @@ if os.path.exists(OBJ_PATH):
         UsdGeom.SetStageMetersPerUnit(wrapper_stage, 1.0)
         UsdGeom.SetStageUpAxis(wrapper_stage, UsdGeom.Tokens.z)
         root_prim = wrapper_stage.DefinePrim("/target_object", "Xform")
-        root_prim.GetReferences().AddReference(
-            "./textured.obj"  # 상대 경로 사용
-        )
+        root_prim.GetReferences().AddReference("./textured.obj")
         wrapper_stage.SetDefaultPrim(root_prim)
         wrapper_stage.GetRootLayer().Save()
         log(f"✅ USD 래퍼 저장 완료")
@@ -140,11 +140,11 @@ if os.path.exists(OBJ_PATH):
         UsdPhysics.RigidBodyAPI.Apply(can_prim)
         UsdPhysics.CollisionAPI.Apply(can_prim)
         mass_api = UsdPhysics.MassAPI.Apply(can_prim)
-        mass_api.CreateMassAttr(0.414)  # Master Chef Can: 414g
+        mass_api.CreateMassAttr(target_cfg["mass"])
         CAN_LOADED = True
-        # 위치 설정 (기존 xformOp:translate 사용)
-        can_prim.GetAttribute("xformOp:translate").Set(Gf.Vec3d(0.1, -0.16, 0.0))
-        log(f"🥫 Master Chef Can loaded at {can_prim_path} pos=(0.1, -0.16, 0)")
+        # 위치 설정
+        can_prim.GetAttribute("xformOp:translate").Set(TARGET_POS)
+        log(f"🥫 {target_cfg['label']} loaded at {can_prim_path} pos={target_cfg['position']}")
         # 자식 prim 확인
         children = can_prim.GetChildren()
         log(f"   Children: {len(children)}")
@@ -285,7 +285,7 @@ try:
             # 타겟 오브젝트 원위치 복원
             if CAN_LOADED:
                 try:
-                    can_prim.GetAttribute("xformOp:translate").Set(Gf.Vec3d(0.1, -0.16, 0.0))
+                    can_prim.GetAttribute("xformOp:translate").Set(TARGET_POS)
                     orient_attr = can_prim.GetAttribute("xformOp:orient")
                     if orient_attr:
                         try:
@@ -315,7 +315,7 @@ try:
             # 타겟 오브젝트 원위치 복원
             if CAN_LOADED:
                 try:
-                    can_prim.GetAttribute("xformOp:translate").Set(Gf.Vec3d(0.1, -0.16, 0.0))
+                    can_prim.GetAttribute("xformOp:translate").Set(TARGET_POS)
                     orient_attr = can_prim.GetAttribute("xformOp:orient")
                     if orient_attr:
                         try:
