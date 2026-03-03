@@ -273,8 +273,13 @@ def get_ee_world_pos():
 INITIAL_ARM_POSE = np.array([0.0, 0.7, 1.3, 0.0, 1.0, 0.0], dtype=np.float32)
 for i, dof_idx in enumerate(arm_dof_indices):
     current_target_angles[dof_idx] = INITIAL_ARM_POSE[i]
-log(f"🎯 Arm pose set (fixed): {INITIAL_ARM_POSE.tolist()}")
-log(f"   📌 EE initial pos: {[round(x,3) for x in get_ee_world_pos()]}")
+
+# IK solver for arm control
+from ik_solver import DoosanIK
+ik_solver = DoosanIK()
+_, _, ee_init = ik_solver.forward_kinematics(INITIAL_ARM_POSE)
+log(f"🎯 Arm ready. Initial pose: {INITIAL_ARM_POSE.tolist()}, FK EE: {[round(x,3) for x in ee_init]}")
+log(f"   Sim EE: {[round(x,3) for x in get_ee_world_pos()]}")
 
 # ── Recording Setup ──
 from recorder import DemoRecorder
@@ -428,9 +433,20 @@ try:
         if recorder.is_recording:
             recorder.add_frame(current_target_angles, latest_image)
 
-        # ── Arm IK (DISABLED — using fixed pose for now) ──
-        # TODO: Implement proper IK (Lula or numerical Jacobian) 
-        # The arm holds INITIAL_ARM_POSE; only fingers move via teleoperation
+        # ── IK for arm joints (analytical FK + simulation feedback) ──
+        if wrist_data_valid:
+            # Get current arm joint angles
+            q_arm = np.array([current_target_angles[idx] for idx in arm_dof_indices], dtype=np.float32)
+            
+            # Use IK solver: 2 iterations per frame for smooth tracking
+            q_new = ik_solver.solve_ik(q_arm, wrist_target_pos, max_iter=2, gain=0.8, damping=0.1)
+            
+            # Smooth interpolation to prevent jerky motion
+            alpha = 0.3  # Blend factor (0=no change, 1=full IK)
+            q_blended = q_arm * (1 - alpha) + q_new * alpha
+            
+            for i, dof_idx in enumerate(arm_dof_indices):
+                current_target_angles[dof_idx] = q_blended[i]
 
         # ── Apply joint positions ──
         allegro.get_articulation_controller().apply_action(

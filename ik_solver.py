@@ -3,6 +3,9 @@ Analytical FK + Jacobian IK Solver for Doosan A0509
 Uses URDF kinematic chain parameters for accurate forward kinematics.
 """
 import numpy as np
+import math
+
+PI_2 = math.pi / 2.0
 
 
 def _rotx(a):
@@ -18,6 +21,7 @@ def _rotz(a):
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
 def _rpy_to_rot(r, p, y):
+    """URDF convention: R = Rz(yaw) @ Ry(pitch) @ Rx(roll)"""
     return _rotz(y) @ _roty(p) @ _rotx(r)
 
 def _make_T(R, t):
@@ -34,27 +38,24 @@ class DoosanIK:
     """
     def __init__(self):
         # Joint definitions from URDF: (xyz, rpy, axis)
-        # All joints have axis (0,0,1) — rotation around local Z
+        # Using exact pi/2 values instead of 1.571 to avoid numerical drift
         self.joints = [
             # joint_1: base → link_1
             {"xyz": [0, 0, 0.156], "rpy": [0, 0, 0]},
             # joint_2: link_1 → link_2
-            {"xyz": [0, 0, 0], "rpy": [0, -1.571, -1.571]},
+            {"xyz": [0, 0, 0], "rpy": [0, -PI_2, -PI_2]},
             # joint_3: link_2 → link_3
-            {"xyz": [0.409, 0, 0], "rpy": [0, 0, 1.571]},
+            {"xyz": [0.409, 0, 0], "rpy": [0, 0, PI_2]},
             # joint_4: link_3 → link_4
-            {"xyz": [0, -0.367, 0], "rpy": [1.571, 0, 0]},
+            {"xyz": [0, -0.367, 0], "rpy": [PI_2, 0, 0]},
             # joint_5: link_4 → link_5
-            {"xyz": [0, 0, 0], "rpy": [-1.571, 0, 0]},
+            {"xyz": [0, 0, 0], "rpy": [-PI_2, 0, 0]},
             # joint_6: link_5 → link_6
-            {"xyz": [0, -0.124, 0], "rpy": [1.571, 0, 0]},
+            {"xyz": [0, -0.124, 0], "rpy": [PI_2, 0, 0]},
         ]
         
         # Joint limits (all ±2.617 rad for A0509)
         self.joint_limits = np.array([[-2.617, 2.617]] * 6)
-        
-        # Default "ready" pose: arm bent forward, hand pointing down toward table
-        self.default_pose = np.array([0.0, 0.8, 1.0, 0.0, 0.8, 0.0])
 
     def forward_kinematics(self, q):
         """
@@ -95,24 +96,25 @@ class DoosanIK:
             J[:, i] = np.cross(z_axes[i], p_ee - positions[i])
         return J
 
-    def solve_ik(self, q_current, target_pos, max_iter=5, gain=1.0, damping=0.01):
+    def solve_ik(self, q_current, target_pos, max_iter=10, gain=1.0, damping=0.05):
         """
         Damped least-squares IK (position only).
         Returns updated joint angles.
         """
         q = q_current.copy().astype(np.float64)
         
-        for _ in range(max_iter):
+        for iteration in range(max_iter):
             _, _, p_ee = self.forward_kinematics(q)
             error = target_pos.astype(np.float64) - p_ee
             error_norm = np.linalg.norm(error)
             
-            if error_norm < 0.002:  # 2mm convergence
+            if error_norm < 0.005:  # 5mm convergence
                 break
             
             # Clamp error for stability
-            if error_norm > 0.05:
-                error = error * (0.05 / error_norm)
+            max_step = 0.05
+            if error_norm > max_step:
+                error = error * (max_step / error_norm)
             
             J = self.jacobian(q)
             
@@ -127,3 +129,21 @@ class DoosanIK:
                 q[i] = np.clip(q[i], self.joint_limits[i, 0], self.joint_limits[i, 1])
         
         return q.astype(np.float32)
+
+
+if __name__ == "__main__":
+    ik = DoosanIK()
+    # Verify FK at zero config: should be approximately (0, 0, 1.056)
+    _, _, p0 = ik.forward_kinematics(np.zeros(6))
+    print(f"Zero config EE: {[round(x,4) for x in p0]}")
+    
+    # Test IK to reach (0.3, 0, 0.5)
+    q0 = np.array([0.0, 0.7, 1.3, 0.0, 1.0, 0.0])
+    _, _, p_init = ik.forward_kinematics(q0)
+    print(f"Initial pose EE: {[round(x,4) for x in p_init]}")
+    
+    target = np.array([0.3, 0.0, 0.5])
+    q_result = ik.solve_ik(q0, target, max_iter=50, gain=1.0, damping=0.05)
+    _, _, p_result = ik.forward_kinematics(q_result)
+    print(f"IK result: q={[round(x,3) for x in q_result]}, ee={[round(x,4) for x in p_result]}")
+    print(f"Error: {np.linalg.norm(p_result - target):.4f}m")
