@@ -1,14 +1,14 @@
 """
-YCB 타겟 오브젝트 설정 모듈
-물체를 교체하려면 ACTIVE_OBJECT만 변경하세요.
+YCB Target Object Configuration Module
+To switch objects, simply change ACTIVE_OBJECT.
 """
 import os
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ═══════════════════════════════════════════
-#  YCB 물체 카탈로그
-#  새 물체 추가: 딕셔너리에 항목 추가 후 ACTIVE_OBJECT 변경
+#  YCB Object Catalog
+#  To add a new object: add entry to dict, then change ACTIVE_OBJECT
 # ═══════════════════════════════════════════
 YCB_OBJECTS = {
     "master_chef_can": {
@@ -20,19 +20,19 @@ YCB_OBJECTS = {
     "tomato_soup_can": {
         "folder": "005_tomato_soup_can",
         "mass": 0.35,
-        "position": (0.08, -0.12, 0.0),
+        "position": (0.05, -0.17, 0.0),
         "label": "Tomato Soup Can",
     },
 }
 
 # ═══════════════════════════════════════════
-#  ★ 여기만 바꾸면 물체 교체 ★
+#  ★ Change this to switch objects ★
 # ═══════════════════════════════════════════
-ACTIVE_OBJECT = "master_chef_can"
+ACTIVE_OBJECT = "tomato_soup_can"
 
 
 def get_active_object():
-    """현재 활성 물체의 설정값 반환 (경로 포함)"""
+    """Return config for the active object (including resolved paths)"""
     if ACTIVE_OBJECT not in YCB_OBJECTS:
         raise ValueError(f"Unknown object: '{ACTIVE_OBJECT}'. Available: {list(YCB_OBJECTS.keys())}")
     
