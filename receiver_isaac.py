@@ -334,8 +334,26 @@ try:
             if len(latest_data) >= 92:  # 23 * 4 bytes
                 all_values = np.array(struct.unpack('23f', latest_data[:92]), dtype=np.float32)
                 received_angles = all_values[:16]
-                wrist_target_pos[:] = all_values[16:19]
+                raw_wrist = all_values[16:19]  # Camera-frame coords from sender
                 wrist_target_quat[:] = all_values[19:23]
+                
+                # ── Camera → Robot Workspace Mapping ──
+                # Sender gives: [x_forward, y_left, z_up] in camera-reoriented frame
+                # (depth=forward, -cam_x=left, -cam_y=up)
+                # Camera typical range: depth ~0.2-0.8m, x ±0.3m, y ±0.3m
+                # Robot workspace: forward 0.2-0.7m, left-right ±0.3m, height 0.1-0.7m
+                
+                # Map camera coords to robot workspace
+                robot_x = np.clip(raw_wrist[0], 0.15, 0.85)   # Forward: keep as-is (meters)
+                robot_y = np.clip(raw_wrist[1], -0.4, 0.4)     # Left-right: keep as-is
+                robot_z = np.clip(raw_wrist[2] + 0.4, 0.05, 0.8)  # Height: shift up (camera 0 → robot 0.4m)
+                
+                mapped_target = np.array([robot_x, robot_y, robot_z], dtype=np.float32)
+                
+                # Low-pass filter for smooth tracking (reduce depth noise)
+                smoothing = 0.3  # 0=ignore new, 1=instant
+                wrist_target_pos[:] = wrist_target_pos * (1 - smoothing) + mapped_target * smoothing
+                
                 wrist_data_valid = True
             elif len(latest_data) >= 64:  # Fallback: 16f only (backward compat)
                 received_angles = np.array(struct.unpack('16f', latest_data[:64]), dtype=np.float32)
