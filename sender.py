@@ -221,15 +221,38 @@ try:
                 px, py = int(wrist.x * w), int(wrist.y * h)
                 px = np.clip(px, 0, w - 1)
                 py = np.clip(py, 0, h - 1)
-                depth_m = depth_frame.get_distance(px, py)
                 
-                if depth_m > 0.1 and depth_m < 2.0:  # Valid depth range
+                # Sample depth in a 5x5 region for robustness
+                depths = []
+                for dx in range(-2, 3):
+                    for dy in range(-2, 3):
+                        sx = np.clip(px + dx, 0, w - 1)
+                        sy = np.clip(py + dy, 0, h - 1)
+                        d = depth_frame.get_distance(int(sx), int(sy))
+                        if d > 0.1 and d < 2.0:
+                            depths.append(d)
+                
+                if len(depths) > 0:
+                    depth_m = np.median(depths)
                     # Deproject pixel + depth to 3D camera coords
                     point_cam = rs.rs2_deproject_pixel_to_point(intrinsics, [px, py], depth_m)
                     # Camera frame (x-right, y-down, z-forward) -> Robot frame (x-forward, y-left, z-up)
                     wrist_pos = np.array([point_cam[2], -point_cam[0], -point_cam[1]])
+                    depth_valid = True
                 else:
+                    depth_m = 0.0
                     wrist_pos = np.array([0.5, 0.0, 0.3])  # Default safe position
+                    depth_valid = False
+                
+                # Debug overlay on image
+                color_str = (0, 255, 0) if depth_valid else (0, 0, 255)
+                cv2.circle(color_image, (px, py), 8, color_str, 2)
+                cv2.putText(color_image, f"depth={depth_m:.3f}m", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_str, 2)
+                cv2.putText(color_image, f"wrist=[{wrist_pos[0]:.2f},{wrist_pos[1]:.2f},{wrist_pos[2]:.2f}]",
+                           (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_str, 2)
+                cv2.putText(color_image, f"valid={depth_valid} N={len(depths)}",
+                           (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_str, 2)
                 
                 # Wrist orientation from palm plane
                 wrist_pt = np.array([lm[0].x, lm[0].y, lm[0].z])
