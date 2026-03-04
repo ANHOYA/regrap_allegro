@@ -274,11 +274,33 @@ INITIAL_ARM_POSE = np.array([0.0, 0.7, 1.3, 0.0, 1.0, 0.0], dtype=np.float32)
 for i, dof_idx in enumerate(arm_dof_indices):
     current_target_angles[dof_idx] = INITIAL_ARM_POSE[i]
 
-# IK solver for arm control
-from ik_solver import DoosanIK
-ik_solver = DoosanIK()
-_, _, ee_init = ik_solver.forward_kinematics(INITIAL_ARM_POSE)
-log(f"🎯 Arm ready. Initial pose: {INITIAL_ARM_POSE.tolist()}, FK EE: {[round(x,3) for x in ee_init]}")
+# ── Isaac Sim Built-in IK Solver (LulaKinematicsSolver) ──
+from isaacsim.robot_motion.motion_generation import (
+    LulaKinematicsSolver,
+    ArticulationKinematicsSolver,
+)
+
+ROBOT_DESC_PATH = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_robot_descriptor.yaml")
+URDF_FOR_IK = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_combined.urdf")
+
+try:
+    lula_kinematics = LulaKinematicsSolver(
+        robot_description_path=ROBOT_DESC_PATH,
+        urdf_path=URDF_FOR_IK,
+    )
+    art_kinematics = ArticulationKinematicsSolver(
+        robot_articulation=allegro,
+        kinematics_solver=lula_kinematics,
+        end_effector_frame_name="arm_link_6",
+    )
+    IK_READY = True
+    log(f"\u2705 Lula IK solver ready! EE frame: arm_link_6")
+except Exception as e:
+    IK_READY = False
+    log(f"\u26a0 Lula IK failed to init: {e}")
+    log(f"   Falling back to fixed arm pose.")
+
+log(f"\ud83c\udfaf Arm ready. Initial pose: {INITIAL_ARM_POSE.tolist()}")
 log(f"   Sim EE: {[round(x,3) for x in get_ee_world_pos()]}")
 
 # ── Recording Setup ──
@@ -451,20 +473,29 @@ try:
         if recorder.is_recording:
             recorder.add_frame(current_target_angles, latest_image)
 
-        # ── IK for arm joints (analytical FK + simulation feedback) ──
-        if wrist_data_valid:
-            # Get current arm joint angles
-            q_arm = np.array([current_target_angles[idx] for idx in arm_dof_indices], dtype=np.float32)
+        # ── IK for arm joints (Isaac Sim LulaKinematicsSolver) ──
+        if wrist_data_valid and IK_READY:
+            # Set 6D pose target: position + orientation
+            art_kinematics.set_end_effector_target(
+                target_position=wrist_target_pos.astype(np.float64),
+                target_orientation=wrist_target_quat.astype(np.float64),  # [w,x,y,z]
+            )
             
-            # Use IK solver: 2 iterations per frame for smooth tracking
-            q_new = ik_solver.solve_ik(q_arm, wrist_target_pos, max_iter=2, gain=0.8, damping=0.1)
+            # Compute IK - returns ArticulationAction with only arm joint targets
+            ik_action = art_kinematics.compute_inverse_kinematics()
             
-            # Smooth interpolation to prevent jerky motion
-            alpha = 0.3  # Blend factor (0=no change, 1=full IK)
-            q_blended = q_arm * (1 - alpha) + q_new * alpha
-            
-            for i, dof_idx in enumerate(arm_dof_indices):
-                current_target_angles[dof_idx] = q_blended[i]
+            if ik_action is not None:
+                # ik_action.joint_positions has targets for ALL DOFs (22)
+                # We only take the arm joints and blend with current for smooth motion
+                ik_positions = ik_action.joint_positions
+                if ik_positions is not None:
+                    alpha = 0.3  # Smooth blending factor
+                    for i, dof_idx in enumerate(arm_dof_indices):
+                        if ik_positions[dof_idx] is not None and not np.isnan(ik_positions[dof_idx]):
+                            current_target_angles[dof_idx] = (
+                                current_target_angles[dof_idx] * (1 - alpha) +
+                                float(ik_positions[dof_idx]) * alpha
+                            )
 
         # ── Apply joint positions ──
         allegro.get_articulation_controller().apply_action(

@@ -1,0 +1,36 @@
+# Robot descriptor for Doosan A0509 + Allegro Hand (combined URDF)
+# Used by LulaKinematicsSolver for IK
+
+api_version: 1.0
+
+# Active joints (controlled by IK solver)
+cspace:
+    - arm_joint_1
+    - arm_joint_2
+    - arm_joint_3
+    - arm_joint_4
+    - arm_joint_5
+    - arm_joint_6
+
+root_link: arm_base_link
+
+default_q: [0.0, 0.7, 1.3, 0.0, 1.0, 0.0]
+
+# Fix all Allegro hand joints at 0 for IK purposes
+cspace_to_urdf_rules:
+    - {name: hand_joint_0, rule: fixed, value: 0.0}
+    - {name: hand_joint_1, rule: fixed, value: 0.0}
+    - {name: hand_joint_2, rule: fixed, value: 0.0}
+    - {name: hand_joint_3, rule: fixed, value: 0.0}
+    - {name: hand_joint_4, rule: fixed, value: 0.0}
+    - {name: hand_joint_5, rule: fixed, value: 0.0}
+    - {name: hand_joint_6, rule: fixed, value: 0.0}
+    - {name: hand_joint_7, rule: fixed, value: 0.0}
+    - {name: hand_joint_8, rule: fixed, value: 0.0}
+    - {name: hand_joint_9, rule: fixed, value: 0.0}
+    - {name: hand_joint_10, rule: fixed, value: 0.0}
+    - {name: hand_joint_11, rule: fixed, value: 0.0}
+    - {name: hand_joint_12, rule: fixed, value: 0.0}
+    - {name: hand_joint_13, rule: fixed, value: 0.0}
+    - {name: hand_joint_14, rule: fixed, value: 0.0}
+    - {name: hand_joint_15, rule: fixed, value: 0.0}
