@@ -12,8 +12,17 @@ import omni.kit.commands
 import omni.appwindow
 
 def log(msg):
-    sys.stderr.write(msg + "\n")
-    sys.stderr.flush()
+    """Log to stderr, safely handling Unicode that crashes Isaac Sim's stderr handler"""
+    try:
+        # Encode to ASCII with replacement to avoid crashing Isaac Sim's log system
+        safe_msg = msg.encode('ascii', errors='replace').decode('ascii')
+        sys.stderr.write(safe_msg + "\n")
+        sys.stderr.flush()
+    except Exception:
+        try:
+            print(msg)
+        except Exception:
+            pass
 
 # 💡 Isaac Sim 5.1.0 API Import
 from isaacsim.core.api import World
@@ -244,7 +253,7 @@ log(f"   매핑 테이블 (sender→sim): {sender_to_sim.tolist()}")
 current_target_angles = np.zeros(num_dof, dtype=np.float32)
 
 # Wrist target pose storage (received from sender)
-wrist_target_pos = np.array([0.4, 0.0, 0.5], dtype=np.float32)  # Default: arm extended
+wrist_target_pos = np.array([0.0, 0.5, 0.5], dtype=np.float32)  # Will be overwritten after IK init
 wrist_target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # Identity
 wrist_data_valid = False
 
@@ -268,13 +277,7 @@ def get_ee_world_pos():
     t = T.ExtractTranslation()
     return np.array([t[0], t[1], t[2]], dtype=np.float64)
 
-# Initial arm pose: bent forward, hand pointing down toward table (for grasping)
-# joints: [base_yaw, shoulder, elbow, wrist_roll, wrist_pitch, wrist_yaw]
-INITIAL_ARM_POSE = np.array([0.0, 0.7, 1.3, 0.0, 1.0, 0.0], dtype=np.float32)
-for i, dof_idx in enumerate(arm_dof_indices):
-    current_target_angles[dof_idx] = INITIAL_ARM_POSE[i]
-
-# ── Isaac Sim Built-in IK Solver (LulaKinematicsSolver) ──
+# -- Isaac Sim Built-in IK Solver (LulaKinematicsSolver) --
 from isaacsim.robot_motion.motion_generation import (
     LulaKinematicsSolver,
     ArticulationKinematicsSolver,
@@ -282,6 +285,14 @@ from isaacsim.robot_motion.motion_generation import (
 
 ROBOT_DESC_PATH = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_robot_descriptor.yaml")
 URDF_FOR_IK = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_combined.urdf")
+
+# Target EE position for initial spawn
+INITIAL_EE_TARGET = np.array([0.0, -0.6, 0.5], dtype=np.float64)
+
+# Fixed EE orientation: handshake pose (fingers horizontal, pointing Y+ forward)
+# Rx(+90deg): EE Z+ (finger direction) -> world Y+ (forward)
+# Quaternion [w, x, y, z] for Rx(+pi/2)
+FIXED_EE_QUAT = np.array([0.7071068, 0.7071068, 0.0, 0.0], dtype=np.float64)
 
 try:
     lula_kinematics = LulaKinematicsSolver(
@@ -294,14 +305,42 @@ try:
         end_effector_frame_name="arm_link_6",
     )
     IK_READY = True
-    log(f"\u2705 Lula IK solver ready! EE frame: arm_link_6")
+    log("[OK] Lula IK solver ready! EE frame: arm_link_6")
+    
+    # Solve IK for initial EE target with horizontal handshake orientation
+    init_action, init_success = art_kinematics.compute_inverse_kinematics(
+        target_position=INITIAL_EE_TARGET,
+        target_orientation=FIXED_EE_QUAT,
+    )
+    if init_success and init_action is not None and init_action.joint_positions is not None:
+        for i, dof_idx in enumerate(arm_dof_indices):
+            val = init_action.joint_positions[dof_idx]
+            if val is not None and not np.isnan(val):
+                current_target_angles[dof_idx] = float(val)
+        log(f"[OK] IK initial pose solved for EE={INITIAL_EE_TARGET.tolist()}")
+        log(f"   arm_q={[round(float(current_target_angles[idx]),3) for idx in arm_dof_indices]}")
+    else:
+        log("[WARN] IK failed for initial pose, using fallback joint angles")
+        FALLBACK_POSE = [0.0, 0.7, 1.3, 0.0, 1.0, 0.0]
+        for i, dof_idx in enumerate(arm_dof_indices):
+            current_target_angles[dof_idx] = FALLBACK_POSE[i]
+
 except Exception as e:
     IK_READY = False
-    log(f"\u26a0 Lula IK failed to init: {e}")
+    log(f"[WARN] Lula IK failed to init: {e}")
     log(f"   Falling back to fixed arm pose.")
+    FALLBACK_POSE = [0.0, 0.7, 1.3, 0.0, 1.0, 0.0]
+    for i, dof_idx in enumerate(arm_dof_indices):
+        current_target_angles[dof_idx] = FALLBACK_POSE[i]
 
-log(f"\ud83c\udfaf Arm ready. Initial pose: {INITIAL_ARM_POSE.tolist()}")
-log(f"   Sim EE: {[round(x,3) for x in get_ee_world_pos()]}")
+# -- First-seen calibration state --
+# When hand first appears, record that camera position as the reference.
+# All subsequent movements are RELATIVE to this reference, mapped around INITIAL_EE_TARGET.
+calib_reference = None  # Will be set on first valid wrist data
+wrist_target_pos = INITIAL_EE_TARGET.copy().astype(np.float32)
+
+log(f"[INFO] Arm ready. Sim EE: {[round(x,3) for x in get_ee_world_pos()]}")
+log(f"   Calibration: first-seen hand position = EE {INITIAL_EE_TARGET.tolist()}")
 
 # ── Recording Setup ──
 from recorder import DemoRecorder
@@ -359,21 +398,40 @@ try:
                 raw_wrist = all_values[16:19]  # Camera-frame coords from sender
                 wrist_target_quat[:] = all_values[19:23]
                 
-                # ── Camera → Robot Workspace Mapping ──
-                # Sender gives: [x_forward, y_left, z_up] in camera-reoriented frame
-                # (depth=forward, -cam_x=left, -cam_y=up)
-                # Camera typical range: depth ~0.2-0.8m, x ±0.3m, y ±0.3m
-                # Robot workspace: forward 0.2-0.7m, left-right ±0.3m, height 0.1-0.7m
+                # -- First-seen calibration & Camera -> Robot mapping --
+                # Sender raw_wrist = [forward, left, up] (camera-reoriented)
+                # User's camera: faces right hand from left side, palm visible
+                #   forward (into camera) -> robot Y+
+                #   right (= -left)       -> robot X+
+                #   up                    -> robot Z+
                 
-                # Map camera coords to robot workspace
-                robot_x = np.clip(raw_wrist[0], 0.15, 0.85)   # Forward: keep as-is (meters)
-                robot_y = np.clip(raw_wrist[1], -0.4, 0.4)     # Left-right: keep as-is
-                robot_z = np.clip(raw_wrist[2] + 0.4, 0.05, 0.8)  # Height: shift up (camera 0 → robot 0.4m)
+                if calib_reference is None:
+                    # First time hand is seen: record as reference point
+                    calib_reference = raw_wrist.copy()
+                    log(f"[CALIB] First-seen hand position recorded: {calib_reference.tolist()}")
+                    log(f"   This maps to robot EE = {INITIAL_EE_TARGET.tolist()}")
+                
+                # Compute delta from first-seen reference
+                delta = raw_wrist - calib_reference  # [d_depth, d_(-cam_x), d_(-cam_y)]
+                
+                # Camera -> Isaac Sim mapping (user-specified):
+                # depth+  -> sim X+  (delta[0] -> X)
+                # cam_x-  -> sim Y+  (delta[1] = -cam_x, so delta[1]+ -> Y+)
+                # cam_y-  -> sim Z+  (delta[2] = -cam_y = image_y_up, so delta[2]+ -> Z+)
+                SCALE = 1.0
+                robot_x = INITIAL_EE_TARGET[0] + delta[0] * SCALE   # depth -> X
+                robot_y = INITIAL_EE_TARGET[1] + delta[1] * SCALE   # -cam_x -> Y
+                robot_z = INITIAL_EE_TARGET[2] + delta[2] * SCALE   # -cam_y -> Z
+                
+                # Clip to safe workspace (centered around INITIAL_EE_TARGET)
+                robot_x = np.clip(robot_x, INITIAL_EE_TARGET[0] - 0.4, INITIAL_EE_TARGET[0] + 0.4)
+                robot_y = np.clip(robot_y, INITIAL_EE_TARGET[1] - 0.3, INITIAL_EE_TARGET[1] + 0.3)
+                robot_z = np.clip(robot_z, 0.05, 0.9)
                 
                 mapped_target = np.array([robot_x, robot_y, robot_z], dtype=np.float32)
                 
-                # Low-pass filter for smooth tracking (reduce depth noise)
-                smoothing = 0.3  # 0=ignore new, 1=instant
+                # Low-pass filter for smooth tracking
+                smoothing = 0.3
                 wrist_target_pos[:] = wrist_target_pos * (1 - smoothing) + mapped_target * smoothing
                 
                 wrist_data_valid = True
@@ -473,20 +531,16 @@ try:
         if recorder.is_recording:
             recorder.add_frame(current_target_angles, latest_image)
 
-        # ── IK for arm joints (Isaac Sim LulaKinematicsSolver) ──
+        # -- IK for arm joints (Isaac Sim LulaKinematicsSolver) --
         if wrist_data_valid and IK_READY:
-            # Set 6D pose target: position + orientation
-            art_kinematics.set_end_effector_target(
+            # Use FIXED orientation (handshake pose, fingers horizontal Y+)
+            # Position-only tracking from camera, orientation stays fixed
+            ik_action, ik_success = art_kinematics.compute_inverse_kinematics(
                 target_position=wrist_target_pos.astype(np.float64),
-                target_orientation=wrist_target_quat.astype(np.float64),  # [w,x,y,z]
+                target_orientation=FIXED_EE_QUAT,
             )
             
-            # Compute IK - returns ArticulationAction with only arm joint targets
-            ik_action = art_kinematics.compute_inverse_kinematics()
-            
-            if ik_action is not None:
-                # ik_action.joint_positions has targets for ALL DOFs (22)
-                # We only take the arm joints and blend with current for smooth motion
+            if ik_success and ik_action is not None:
                 ik_positions = ik_action.joint_positions
                 if ik_positions is not None:
                     alpha = 0.3  # Smooth blending factor
@@ -518,6 +572,10 @@ except KeyboardInterrupt:
     if recorder.is_recording:
         recorder.discard()
     log("Interrupted by user")
+except Exception as e:
+    import traceback
+    log(f"FATAL ERROR in main loop: {e}")
+    log(traceback.format_exc())
 
 finally:
     input_iface.unsubscribe_to_keyboard_events(keyboard, keyboard_sub)
