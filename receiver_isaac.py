@@ -225,6 +225,14 @@ if os.path.exists(OBJ_PATH):
         UsdPhysics.CollisionAPI.Apply(can_prim)
         mass_api = UsdPhysics.MassAPI.Apply(can_prim)
         mass_api.CreateMassAttr(target_cfg["mass"])
+        # Apply friction material
+        mat_path = "/World/target_physics_material"
+        physics_mat = UsdShade.Material.Define(stage, mat_path)
+        phys_api = UsdPhysics.MaterialAPI.Apply(physics_mat.GetPrim())
+        phys_api.CreateStaticFrictionAttr(target_cfg.get("static_friction", 0.8))
+        phys_api.CreateDynamicFrictionAttr(target_cfg.get("dynamic_friction", 0.6))
+        phys_api.CreateRestitutionAttr(target_cfg.get("restitution", 0.1))
+        UsdShade.MaterialBindingAPI(can_prim).Bind(physics_mat, UsdShade.Tokens.weakerThanDescendants, "physics")
         CAN_LOADED = True
         # 위치 설정
         can_prim.GetAttribute("xformOp:translate").Set(TARGET_POS)
@@ -336,6 +344,14 @@ URDF_FOR_IK = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_combined.urdf")
 # Target EE position for initial spawn
 INITIAL_EE_TARGET = np.array([0.0, 0.5, 0.3], dtype=np.float64)
 
+# ── Workspace Safety ──
+Z_MIN_LIMIT = 0.05       # EE target Z minimum (5cm above ground)
+Z_MIN_ELBOW = 0.08       # Elbow Z minimum (8cm above ground)
+WORKSPACE_RADIUS = 0.5   # Max delta from initial position
+
+# Store last known safe arm configuration
+previous_good_arm_q = None
+
 try:
     lula_kinematics = LulaKinematicsSolver(
         robot_description_path=ROBOT_DESC_PATH,
@@ -394,13 +410,14 @@ try:
         cam_prim = UsdGeom.Camera.Define(stage, cam_path).GetPrim()
     xformable = UsdGeom.Xformable(cam_prim)
     xformable.ClearXformOpOrder()
-    # Set camera transform: position [0, -0.5, 0.8], looking toward Y+
-    # Camera in USD looks along -Z local axis by default
-    # To look toward Y+: rotate 90deg around X
+    # Camera transform (user-tuned)
     translate_op = xformable.AddTranslateOp()
-    translate_op.Set(Gf.Vec3d(0.0, -0.5, 0.8))
+    translate_op.Set(Gf.Vec3d(0.0, -0.7, 2.6))
     rotate_op = xformable.AddRotateXYZOp()
-    rotate_op.Set(Gf.Vec3d(90.0, 0.0, 0.0))  # Rx(90deg) to look along Y+
+    rotate_op.Set(Gf.Vec3d(26, -0.0, 0))
+    # Set focal length 24mm
+    cam_api = UsdGeom.Camera(cam_prim)
+    cam_api.GetFocalLengthAttr().Set(24.0)
     
     for _ in range(3):
         simulation_app.update()
@@ -481,12 +498,28 @@ def vp_fingers_to_allegro(finger_transforms):
     angles[11] = angle_between(ring_vecs[2], ring_vecs[3])
     
     # Thumb (VP: 1-4, Allegro: joints 12-15)
-    # Include wrist->knuckle vector for rotation angle
+    # VP thumb joints: 0=wrist, 1=thumbCMC, 2=thumbMCP, 3=thumbIP, 4=thumbTip
     th_vecs = [pos[1]-pos[0], pos[2]-pos[1], pos[3]-pos[2], pos[4]-pos[3]]
-    angles[12] = angle_between(th_vecs[0], th_vecs[1])  # thumb rotation/abduction
-    angles[13] = angle_between(th_vecs[1], th_vecs[2])  # MCP flexion
-    angles[14] = angle_between(th_vecs[2], th_vecs[3])  # PIP flexion
-    angles[15] = angles[14] * 0.5  # DIP coupled to PIP
+    
+    # Joint 12: Thumb rotation/abduction (CMC) - use palm-to-thumb angle
+    # Compute palm plane from index and pinky metacarpals
+    palm_y = pos[5] - pos[0]   # wrist -> index metacarpal
+    palm_x = pos[15] - pos[0]  # wrist -> ring metacarpal
+    palm_normal = np.cross(palm_y, palm_x)
+    palm_normal = palm_normal / (np.linalg.norm(palm_normal) + 1e-8)
+    thumb_dir = pos[2] - pos[1]  # metacarpal -> knuckle
+    thumb_dir = thumb_dir / (np.linalg.norm(thumb_dir) + 1e-8)
+    # Angle between palm normal and thumb direction
+    dot_val = np.clip(np.dot(palm_normal, thumb_dir), -1, 1)
+    thumb_rotation = np.abs(np.arcsin(dot_val))
+    angles[12] = thumb_rotation * 1.5  # Gain for better range
+    
+    # Joint 13: MCP flexion (amplified)
+    angles[13] = angle_between(th_vecs[0], th_vecs[1]) * 1.3
+    # Joint 14: IP flexion (amplified)
+    angles[14] = angle_between(th_vecs[1], th_vecs[2]) * 1.3
+    # Joint 15: DIP coupled
+    angles[15] = angle_between(th_vecs[2], th_vecs[3]) * 0.8
     
     return angles
 
@@ -536,9 +569,10 @@ try:
                 robot_pos = INITIAL_EE_TARGET + vp_delta
                 
                 # Clip to safe workspace
-                robot_pos[0] = np.clip(robot_pos[0], INITIAL_EE_TARGET[0] - 0.4, INITIAL_EE_TARGET[0] + 0.4)
-                robot_pos[1] = np.clip(robot_pos[1], INITIAL_EE_TARGET[1] - 0.4, INITIAL_EE_TARGET[1] + 0.4)
-                robot_pos[2] = np.clip(robot_pos[2], 0.05, 0.9)
+                robot_pos[0] = np.clip(robot_pos[0], INITIAL_EE_TARGET[0] - WORKSPACE_RADIUS, INITIAL_EE_TARGET[0] + WORKSPACE_RADIUS)
+                robot_pos[1] = np.clip(robot_pos[1], INITIAL_EE_TARGET[1] - WORKSPACE_RADIUS, INITIAL_EE_TARGET[1] + WORKSPACE_RADIUS)
+                # Z-axis: CRITICAL - enforce minimum height to prevent ground penetration
+                robot_pos[2] = np.clip(robot_pos[2], Z_MIN_LIMIT, 0.9)
                 
                 # Low-pass filter
                 smoothing = 0.3
@@ -639,13 +673,36 @@ try:
             if ik_success and ik_action is not None:
                 ik_positions = ik_action.joint_positions
                 if ik_positions is not None:
-                    alpha = 0.3  # Smooth blending factor
-                    for i, dof_idx in enumerate(arm_dof_indices):
-                        if ik_positions[dof_idx] is not None and not np.isnan(ik_positions[dof_idx]):
-                            current_target_angles[dof_idx] = (
-                                current_target_angles[dof_idx] * (1 - alpha) +
-                                float(ik_positions[dof_idx]) * alpha
-                            )
+                    # -- Post-IK Safety: check elbow height via FK --
+                    # Get arm_link_3 (elbow) world position to check Z
+                    ik_safe = True
+                    try:
+                        elbow_prim = stage.GetPrimAtPath("/World/doosan_allegro/arm_link_3")
+                        if elbow_prim.IsValid():
+                            from pxr import UsdGeom
+                            xformable = UsdGeom.Xformable(elbow_prim)
+                            world_tf = xformable.ComputeLocalToWorldTransform(0)
+                            elbow_z = world_tf.GetRow(3)[2]
+                            if elbow_z < Z_MIN_ELBOW:
+                                ik_safe = False  # Reject: elbow below ground
+                    except Exception:
+                        pass  # If FK check fails, accept the IK solution
+                    
+                    if ik_safe:
+                        alpha = 0.3  # Smooth blending factor
+                        for i, dof_idx in enumerate(arm_dof_indices):
+                            if ik_positions[dof_idx] is not None and not np.isnan(ik_positions[dof_idx]):
+                                current_target_angles[dof_idx] = (
+                                    current_target_angles[dof_idx] * (1 - alpha) +
+                                    float(ik_positions[dof_idx]) * alpha
+                                )
+                        # Store as last known good configuration
+                        previous_good_arm_q = [float(current_target_angles[idx]) for idx in arm_dof_indices]
+                    else:
+                        # Elbow too low - keep previous safe configuration
+                        if previous_good_arm_q is not None:
+                            for i, dof_idx in enumerate(arm_dof_indices):
+                                current_target_angles[dof_idx] = previous_good_arm_q[i]
 
         # ── Apply joint positions ──
         allegro.get_articulation_controller().apply_action(

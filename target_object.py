@@ -14,14 +14,21 @@ YCB_OBJECTS = {
     "master_chef_can": {
         "folder": "002_master_chef_can",
         "mass": 0.414,
-        "position": (0.08, -0.12, 0.0),
+        # "position": (0.08, -0.12, 0.0),
+        "position": (0.08, 0.55, 0.0),
         "label": "Master Chef Can",
+        "static_friction": 0.8,
+        "dynamic_friction": 0.6,
+        "restitution": 0.1,
     },
     "tomato_soup_can": {
         "folder": "005_tomato_soup_can",
         "mass": 0.35,
-        "position": (0.05, -0.17, 0.0),
+        "position": (0.05, 0.5, 0.0),
         "label": "Tomato Soup Can",
+        "static_friction": 0.8,
+        "dynamic_friction": 0.6,
+        "restitution": 0.1,
     },
 }
 
