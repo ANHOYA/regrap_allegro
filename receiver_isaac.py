@@ -344,10 +344,11 @@ URDF_FOR_IK = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_combined.urdf")
 # Target EE position for initial spawn
 INITIAL_EE_TARGET = np.array([0.0, 0.5, 0.3], dtype=np.float64)
 
-# ── Workspace Safety ──
-Z_MIN_LIMIT = 0.05       # EE target Z minimum (5cm above ground)
-Z_MIN_ELBOW = 0.08       # Elbow Z minimum (8cm above ground)
-WORKSPACE_RADIUS = 0.5   # Max delta from initial position
+# ── Workspace Safety & Control ──
+Z_MIN_LIMIT = 0.03       # Absolute minimum Z (3cm above ground)
+Z_CUSHION = 0.10         # Soft cushion starts at 10cm
+WORKSPACE_RADIUS = 0.65  # Max delta from initial position
+POS_GAIN = 2.0           # Multiplier for 3D translation (X,Y,Z)
 
 # Store last known safe arm configuration
 previous_good_arm_q = None
@@ -544,19 +545,6 @@ try:
                 rw[:3, :3] = rw[:3, :3] @ OPERATOR2VP_RIGHT
                 raw_wrist_pos = rw[:3, 3].copy()  # 3D position in meters
                 
-                # -- Wrist ORIENTATION (following keti_retargeting) --
-                # 1. Extract quaternion from transformed rotation
-                quat_wxyz = rot_matrix_to_quat_wxyz(rw[:3, :3])
-                # 2. Use directly (OPERATOR2VP_RIGHT handles frame; no Rx(pi) needed for our setup)
-                target_quat = quat_wxyz / (np.linalg.norm(quat_wxyz) + 1e-8)
-                # 3. Smooth orientation (SLERP approximation via averaging)
-                quat_smooth = 0.3
-                # Ensure quaternion hemisphere consistency (avoid sign flip)
-                if np.dot(wrist_target_quat, target_quat) < 0:
-                    target_quat = -target_quat
-                wrist_target_quat[:] = wrist_target_quat * (1 - quat_smooth) + target_quat * quat_smooth
-                wrist_target_quat[:] = wrist_target_quat / (np.linalg.norm(wrist_target_quat) + 1e-8)
-                
                 # -- Wrist POSITION --
                 # First-seen calibration
                 if calib_reference is None:
@@ -565,18 +553,48 @@ try:
                     log(f"   Maps to robot EE = {INITIAL_EE_TARGET.tolist()}")
                 
                 # VP -> Isaac Sim coordinate mapping (direct 1:1)
-                vp_delta = raw_wrist_pos - calib_reference
+                vp_delta = (raw_wrist_pos - calib_reference) * POS_GAIN
                 robot_pos = INITIAL_EE_TARGET + vp_delta
                 
                 # Clip to safe workspace
                 robot_pos[0] = np.clip(robot_pos[0], INITIAL_EE_TARGET[0] - WORKSPACE_RADIUS, INITIAL_EE_TARGET[0] + WORKSPACE_RADIUS)
                 robot_pos[1] = np.clip(robot_pos[1], INITIAL_EE_TARGET[1] - WORKSPACE_RADIUS, INITIAL_EE_TARGET[1] + WORKSPACE_RADIUS)
-                # Z-axis: CRITICAL - enforce minimum height to prevent ground penetration
-                robot_pos[2] = np.clip(robot_pos[2], Z_MIN_LIMIT, 0.9)
+                
+                # Z-axis: Soft cushion to prevent ground smash but allow grasping
+                target_z = robot_pos[2]
+                if target_z < Z_CUSHION:
+                    # Smoothly compress Z below cushion level (halved movement speed towards floor)
+                    target_z = Z_CUSHION - (Z_CUSHION - target_z) * 0.3
+                robot_pos[2] = np.clip(target_z, Z_MIN_LIMIT, 0.9)
                 
                 # Low-pass filter
                 smoothing = 0.3
                 wrist_target_pos[:] = wrist_target_pos * (1 - smoothing) + robot_pos.astype(np.float32) * smoothing
+                wrist_target_pos[2] = max(wrist_target_pos[2], Z_MIN_LIMIT)
+
+                # -- Wrist ORIENTATION (following keti_retargeting) --
+                # 1. Extract quaternion from transformed rotation
+                quat_wxyz = rot_matrix_to_quat_wxyz(rw[:3, :3])
+                # 2. Normalize
+                target_quat = quat_wxyz / (np.linalg.norm(quat_wxyz) + 1e-8)
+                
+                # Pitch bias for grasping: naturally point hand slightly downwards
+                pitch_bias_quat = Gf.Rotation(Gf.Vec3d(1, 0, 0), 20).GetQuat()
+                target_quat_gf = Gf.Quatd(float(target_quat[3]), float(target_quat[0]), float(target_quat[1]), float(target_quat[2]))
+                biased_quat = target_quat_gf * pitch_bias_quat
+                
+                target_quat[3] = biased_quat.GetReal()
+                target_quat[0] = biased_quat.GetImaginary()[0]
+                target_quat[1] = biased_quat.GetImaginary()[1]
+                target_quat[2] = biased_quat.GetImaginary()[2]
+                
+                # Smooth orientation
+                quat_smooth = 0.3
+                if np.dot(wrist_target_quat, target_quat) < 0:
+                    target_quat = -target_quat
+                wrist_target_quat[:] = wrist_target_quat * (1 - quat_smooth) + target_quat * quat_smooth
+                wrist_target_quat[:] = wrist_target_quat / (np.linalg.norm(wrist_target_quat) + 1e-8)
+                
                 wrist_data_valid = True
                 
                 # -- Finger retargeting --
@@ -673,36 +691,13 @@ try:
             if ik_success and ik_action is not None:
                 ik_positions = ik_action.joint_positions
                 if ik_positions is not None:
-                    # -- Post-IK Safety: check elbow height via FK --
-                    # Get arm_link_3 (elbow) world position to check Z
-                    ik_safe = True
-                    try:
-                        elbow_prim = stage.GetPrimAtPath("/World/doosan_allegro/arm_link_3")
-                        if elbow_prim.IsValid():
-                            from pxr import UsdGeom
-                            xformable = UsdGeom.Xformable(elbow_prim)
-                            world_tf = xformable.ComputeLocalToWorldTransform(0)
-                            elbow_z = world_tf.GetRow(3)[2]
-                            if elbow_z < Z_MIN_ELBOW:
-                                ik_safe = False  # Reject: elbow below ground
-                    except Exception:
-                        pass  # If FK check fails, accept the IK solution
-                    
-                    if ik_safe:
-                        alpha = 0.3  # Smooth blending factor
-                        for i, dof_idx in enumerate(arm_dof_indices):
-                            if ik_positions[dof_idx] is not None and not np.isnan(ik_positions[dof_idx]):
-                                current_target_angles[dof_idx] = (
-                                    current_target_angles[dof_idx] * (1 - alpha) +
-                                    float(ik_positions[dof_idx]) * alpha
-                                )
-                        # Store as last known good configuration
-                        previous_good_arm_q = [float(current_target_angles[idx]) for idx in arm_dof_indices]
-                    else:
-                        # Elbow too low - keep previous safe configuration
-                        if previous_good_arm_q is not None:
-                            for i, dof_idx in enumerate(arm_dof_indices):
-                                current_target_angles[dof_idx] = previous_good_arm_q[i]
+                    alpha = 0.3  # Smooth blending factor
+                    for i, dof_idx in enumerate(arm_dof_indices):
+                        if ik_positions[dof_idx] is not None and not np.isnan(ik_positions[dof_idx]):
+                            current_target_angles[dof_idx] = (
+                                current_target_angles[dof_idx] * (1 - alpha) +
+                                float(ik_positions[dof_idx]) * alpha
+                            )
 
         # ── Apply joint positions ──
         allegro.get_articulation_controller().apply_action(
