@@ -4,8 +4,6 @@ simulation_app = SimulationApp({"headless": False})
 
 import os
 import sys
-import socket
-import struct
 import time
 import numpy as np
 import omni.kit.commands
@@ -14,7 +12,6 @@ import omni.appwindow
 def log(msg):
     """Log to stderr, safely handling Unicode that crashes Isaac Sim's stderr handler"""
     try:
-        # Encode to ASCII with replacement to avoid crashing Isaac Sim's log system
         safe_msg = msg.encode('ascii', errors='replace').decode('ascii')
         sys.stderr.write(safe_msg + "\n")
         sys.stderr.flush()
@@ -24,21 +21,27 @@ def log(msg):
         except Exception:
             pass
 
-# 💡 Isaac Sim 5.1.0 API Import
+# Isaac Sim 5.1.0 API Import
 from isaacsim.core.api import World
 from isaacsim.core.api.robots import Robot
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.asset.importer.urdf import _urdf
 
-# 1. UDP Receive Setting
-UDP_IP = "127.0.0.1"
-UDP_PORT = 5005
+# ============================================================
+# Vision Pro Configuration
+# ============================================================
+VISIONPRO_IP = "192.168.0.36"  # <-- Change this to your Vision Pro IP
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind((UDP_IP, UDP_PORT))
-sock.setblocking(False)
+from avp_stream import VisionProStreamer
+vp = VisionProStreamer(ip=VISIONPRO_IP)
+log(f"[VP] VisionProStreamer connecting to {VISIONPRO_IP}...")
 
-log(f"Isaac Sim: UDP Receive Waiting... Port {UDP_PORT}")
+# Coordinate frame transform: Vision Pro -> Robot (from keti_retargeting)
+OPERATOR2VP_RIGHT = np.array([
+    [0, 0, -1],
+    [-1, 0, 0],
+    [0, 1, 0],
+], dtype=np.float64)
 
 # 2. Isaac Sim World Setting (Fixed Physics Step to 1/60s)
 world = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
@@ -252,9 +255,8 @@ log(f"   매핑 테이블 (sender→sim): {sender_to_sim.tolist()}")
 # 22개 관절의 최신 타겟 각도를 저장할 배열
 current_target_angles = np.zeros(num_dof, dtype=np.float32)
 
-# Wrist target pose storage (received from sender)
+# Wrist target pose storage (from Vision Pro)
 wrist_target_pos = np.array([0.0, 0.5, 0.5], dtype=np.float32)  # Will be overwritten after IK init
-wrist_target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # Identity
 wrist_data_valid = False
 
 # ── IK Setup (simulation-based) ──
@@ -344,16 +346,10 @@ log(f"   Calibration: first-seen hand position = EE {INITIAL_EE_TARGET.tolist()}
 
 # ── Recording Setup ──
 from recorder import DemoRecorder
-import cv2
 
 recorder = DemoRecorder(save_dir=os.path.join(SCRIPT_DIR, "demos"), image_subsample=6)
 
-# Image reception socket (port 5006)
-sock_img = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock_img.bind(("127.0.0.1", 5006))
-sock_img.setblocking(False)
-
-latest_image = None  # Most recent camera frame
+latest_image = None  # No camera image from VP (can add later)
 
 # Keyboard input via Isaac Sim's carb input system
 import carb.input
@@ -372,8 +368,57 @@ def on_key_event(event):
 
 keyboard_sub = input_iface.subscribe_to_keyboard_events(keyboard, on_key_event)
 
+# -- VP finger joint indices for retargeting --
+# VP skeleton: [0]wrist, [1-4]thumb, [5-9]index, [10-14]middle, [15-19]ring, [20-24]little
+# We compute finger curl angles from joint positions to map to Allegro
+def vp_fingers_to_allegro(finger_transforms):
+    """Convert VP right hand finger transforms (25x4x4) to Allegro 16 joint angles.
+    
+    Uses joint position vectors to compute curl angles for each finger.
+    VP joints per finger: [metacarpal, knuckle, intermediateBase, intermediateTip, tip]
+    Allegro joints per finger: [abduction, MCP_flex, PIP_flex, DIP_flex]
+    """
+    def angle_between(v1, v2):
+        c = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
+        return np.arccos(np.clip(c, -1, 1))
+    
+    angles = np.zeros(16, dtype=np.float32)
+    
+    # Extract 3D positions from 4x4 transforms
+    pos = finger_transforms[:, :3, 3]  # (25, 3)
+    
+    # Index finger (VP: 5-9, Allegro: joints 0-3)
+    idx_vecs = [pos[6]-pos[5], pos[7]-pos[6], pos[8]-pos[7], pos[9]-pos[8]]
+    angles[0] = 0.0  # index abduction (TODO: compute from palm plane)
+    angles[1] = angle_between(idx_vecs[0], idx_vecs[1])  # MCP
+    angles[2] = angle_between(idx_vecs[1], idx_vecs[2])  # PIP
+    angles[3] = angle_between(idx_vecs[2], idx_vecs[3])  # DIP
+    
+    # Middle finger (VP: 10-14, Allegro: joints 4-7)
+    mid_vecs = [pos[11]-pos[10], pos[12]-pos[11], pos[13]-pos[12], pos[14]-pos[13]]
+    angles[4] = 0.0  # abduction
+    angles[5] = angle_between(mid_vecs[0], mid_vecs[1])
+    angles[6] = angle_between(mid_vecs[1], mid_vecs[2])
+    angles[7] = angle_between(mid_vecs[2], mid_vecs[3])
+    
+    # Ring finger (VP: 15-19, Allegro: joints 8-11)
+    ring_vecs = [pos[16]-pos[15], pos[17]-pos[16], pos[18]-pos[17], pos[19]-pos[18]]
+    angles[8] = 0.0  # abduction
+    angles[9] = angle_between(ring_vecs[0], ring_vecs[1])
+    angles[10] = angle_between(ring_vecs[1], ring_vecs[2])
+    angles[11] = angle_between(ring_vecs[2], ring_vecs[3])
+    
+    # Thumb (VP: 1-4, Allegro: joints 12-15)
+    th_vecs = [pos[2]-pos[1], pos[3]-pos[2], pos[4]-pos[3]]
+    angles[12] = 0.0  # thumb rotation (TODO)
+    angles[13] = angle_between(th_vecs[0], th_vecs[1])
+    angles[14] = angle_between(th_vecs[1], th_vecs[2])
+    angles[15] = 0.0  # extra
+    
+    return angles
+
 log("=" * 50)
-log("🎮 Controls: [S]=Start  [R]=Reset  [T]=Save  [Q]=Quit")
+log("Controls: [S]=Start  [R]=Reset  [T]=Save  [Q]=Quit")
 log("=" * 50)
 
 frame_counter = 0
@@ -381,83 +426,48 @@ frame_counter = 0
 # 6. Main Control Loop
 try:
     while simulation_app.is_running():
-        # ── Read latest joint data ──
-        latest_data = None
-        while True:
+        # -- Read hand tracking from Vision Pro --
+        vp_data = vp.get_latest()
+        
+        if vp_data is not None:
             try:
-                data, addr = sock.recvfrom(256)
-                latest_data = data
-            except BlockingIOError:
-                break
-
-        if latest_data is not None:
-            # Parse 23f: 16 finger + 3 wrist_pos + 4 wrist_quat
-            if len(latest_data) >= 92:  # 23 * 4 bytes
-                all_values = np.array(struct.unpack('23f', latest_data[:92]), dtype=np.float32)
-                received_angles = all_values[:16]
-                raw_wrist = all_values[16:19]  # Camera-frame coords from sender
-                wrist_target_quat[:] = all_values[19:23]
+                # Get right wrist SE3 transform (4x4)
+                rw = np.array(vp_data["right_wrist"][0], dtype=np.float64).copy()
                 
-                # -- First-seen calibration & Camera -> Robot mapping --
-                # Sender raw_wrist = [forward, left, up] (camera-reoriented)
-                # User's camera: faces right hand from left side, palm visible
-                #   forward (into camera) -> robot Y+
-                #   right (= -left)       -> robot X+
-                #   up                    -> robot Z+
+                # Apply coordinate frame transform (VP -> Robot)
+                rw[:3, :3] = rw[:3, :3] @ OPERATOR2VP_RIGHT
+                raw_wrist_pos = rw[:3, 3].copy()  # 3D position in meters
                 
+                # First-seen calibration
                 if calib_reference is None:
-                    # First time hand is seen: record as reference point
-                    calib_reference = raw_wrist.copy()
-                    log(f"[CALIB] First-seen hand position recorded: {calib_reference.tolist()}")
-                    log(f"   This maps to robot EE = {INITIAL_EE_TARGET.tolist()}")
+                    calib_reference = raw_wrist_pos.copy()
+                    log(f"[CALIB] First-seen VP wrist: {[round(x,3) for x in calib_reference]}")
+                    log(f"   Maps to robot EE = {INITIAL_EE_TARGET.tolist()}")
                 
-                # Compute delta from first-seen reference
-                delta = raw_wrist - calib_reference  # [d_depth, d_(-cam_x), d_(-cam_y)]
+                # Delta from reference -> robot workspace
+                delta = raw_wrist_pos - calib_reference
+                robot_pos = INITIAL_EE_TARGET + delta
                 
-                # Camera -> Isaac Sim mapping (user-specified):
-                # depth+  -> sim X+  (delta[0] -> X)
-                # cam_x-  -> sim Y+  (delta[1] = -cam_x, so delta[1]+ -> Y+)
-                # cam_y-  -> sim Z+  (delta[2] = -cam_y = image_y_up, so delta[2]+ -> Z+)
-                SCALE = 1.0
-                robot_x = INITIAL_EE_TARGET[0] + delta[0] * SCALE   # depth -> X
-                robot_y = INITIAL_EE_TARGET[1] + delta[1] * SCALE   # -cam_x -> Y
-                robot_z = INITIAL_EE_TARGET[2] + delta[2] * SCALE   # -cam_y -> Z
+                # Clip to safe workspace
+                robot_pos[0] = np.clip(robot_pos[0], INITIAL_EE_TARGET[0] - 0.4, INITIAL_EE_TARGET[0] + 0.4)
+                robot_pos[1] = np.clip(robot_pos[1], INITIAL_EE_TARGET[1] - 0.4, INITIAL_EE_TARGET[1] + 0.4)
+                robot_pos[2] = np.clip(robot_pos[2], 0.05, 0.9)
                 
-                # Clip to safe workspace (centered around INITIAL_EE_TARGET)
-                robot_x = np.clip(robot_x, INITIAL_EE_TARGET[0] - 0.4, INITIAL_EE_TARGET[0] + 0.4)
-                robot_y = np.clip(robot_y, INITIAL_EE_TARGET[1] - 0.3, INITIAL_EE_TARGET[1] + 0.3)
-                robot_z = np.clip(robot_z, 0.05, 0.9)
-                
-                mapped_target = np.array([robot_x, robot_y, robot_z], dtype=np.float32)
-                
-                # Low-pass filter for smooth tracking
+                # Low-pass filter
                 smoothing = 0.3
-                wrist_target_pos[:] = wrist_target_pos * (1 - smoothing) + mapped_target * smoothing
-                
+                wrist_target_pos[:] = wrist_target_pos * (1 - smoothing) + robot_pos.astype(np.float32) * smoothing
                 wrist_data_valid = True
-            elif len(latest_data) >= 64:  # Fallback: 16f only (backward compat)
-                received_angles = np.array(struct.unpack('16f', latest_data[:64]), dtype=np.float32)
-            else:
-                received_angles = None
-            
-            if received_angles is not None:
-                for s_idx in range(min(len(received_angles), len(sender_to_sim))):
-                    current_target_angles[sender_to_sim[s_idx]] = received_angles[s_idx]
-
-        # ── Read latest camera image ──
-        latest_img_data = None
-        while True:
-            try:
-                img_data, _ = sock_img.recvfrom(65535)
-                latest_img_data = img_data
-            except BlockingIOError:
-                break
-
-        if latest_img_data is not None:
-            jpg_array = np.frombuffer(latest_img_data, dtype=np.uint8)
-            decoded = cv2.imdecode(jpg_array, cv2.IMREAD_COLOR)
-            if decoded is not None:
-                latest_image = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+                
+                # -- Finger retargeting --
+                right_fingers = np.array(vp_data["right_fingers"], dtype=np.float64)  # (25, 4, 4)
+                finger_angles = vp_fingers_to_allegro(right_fingers)
+                
+                # Map finger angles to Allegro DOFs
+                for s_idx in range(min(len(finger_angles), len(sender_to_sim))):
+                    current_target_angles[sender_to_sim[s_idx]] = finger_angles[s_idx]
+                    
+            except Exception as e:
+                pass  # Skip frame on VP data errors
 
         # ── Keyboard State Machine ──
         if key_pressed["s"] and not recorder.is_recording:
@@ -579,6 +589,4 @@ except Exception as e:
 
 finally:
     input_iface.unsubscribe_to_keyboard_events(keyboard, keyboard_sub)
-    sock.close()
-    sock_img.close()
     simulation_app.close()
