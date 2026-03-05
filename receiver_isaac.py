@@ -43,6 +43,50 @@ OPERATOR2VP_RIGHT = np.array([
     [0, 1, 0],
 ], dtype=np.float64)
 
+# Rx(180deg) quaternion in [w,x,y,z] format: cos(90)=0, sin(90)=1 → [0,1,0,0]
+RX_PI_WXYZ = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+
+def rot_matrix_to_quat_wxyz(R):
+    """Convert 3x3 rotation matrix to quaternion [w,x,y,z]."""
+    tr = R[0,0] + R[1,1] + R[2,2]
+    if tr > 0:
+        s = 0.5 / np.sqrt(tr + 1.0)
+        w = 0.25 / s
+        x = (R[2,1] - R[1,2]) * s
+        y = (R[0,2] - R[2,0]) * s
+        z = (R[1,0] - R[0,1]) * s
+    elif R[0,0] > R[1,1] and R[0,0] > R[2,2]:
+        s = 2.0 * np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2])
+        w = (R[2,1] - R[1,2]) / s
+        x = 0.25 * s
+        y = (R[0,1] + R[1,0]) / s
+        z = (R[0,2] + R[2,0]) / s
+    elif R[1,1] > R[2,2]:
+        s = 2.0 * np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2])
+        w = (R[0,2] - R[2,0]) / s
+        x = (R[0,1] + R[1,0]) / s
+        y = 0.25 * s
+        z = (R[1,2] + R[2,1]) / s
+    else:
+        s = 2.0 * np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1])
+        w = (R[1,0] - R[0,1]) / s
+        x = (R[0,2] + R[2,0]) / s
+        y = (R[1,2] + R[2,1]) / s
+        z = 0.25 * s
+    q = np.array([w, x, y, z], dtype=np.float64)
+    return q / (np.linalg.norm(q) + 1e-8)
+
+def quat_multiply_wxyz(q1, q2):
+    """Hamilton product q1*q2, both in [w,x,y,z] format."""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ], dtype=np.float64)
+
 # 2. Isaac Sim World Setting (Fixed Physics Step to 1/60s)
 world = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
 world.scene.add_default_ground_plane()
@@ -257,6 +301,7 @@ current_target_angles = np.zeros(num_dof, dtype=np.float32)
 
 # Wrist target pose storage (from Vision Pro)
 wrist_target_pos = np.array([0.0, 0.5, 0.5], dtype=np.float32)  # Will be overwritten after IK init
+wrist_target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)  # Identity [w,x,y,z]
 wrist_data_valid = False
 
 # ── IK Setup (simulation-based) ──
@@ -289,12 +334,7 @@ ROBOT_DESC_PATH = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_robot_descript
 URDF_FOR_IK = os.path.join(SCRIPT_DIR, "src", "doosan_allegro_combined.urdf")
 
 # Target EE position for initial spawn
-INITIAL_EE_TARGET = np.array([0.0, -0.6, 0.5], dtype=np.float64)
-
-# Fixed EE orientation: handshake pose (fingers horizontal, pointing Y+ forward)
-# Rx(+90deg): EE Z+ (finger direction) -> world Y+ (forward)
-# Quaternion [w, x, y, z] for Rx(+pi/2)
-FIXED_EE_QUAT = np.array([0.7071068, 0.7071068, 0.0, 0.0], dtype=np.float64)
+INITIAL_EE_TARGET = np.array([0.0, 0.5, 0.3], dtype=np.float64)
 
 try:
     lula_kinematics = LulaKinematicsSolver(
@@ -309,10 +349,10 @@ try:
     IK_READY = True
     log("[OK] Lula IK solver ready! EE frame: arm_link_6")
     
-    # Solve IK for initial EE target with horizontal handshake orientation
+    # Solve IK for initial EE target (position-only, no orientation constraint)
     init_action, init_success = art_kinematics.compute_inverse_kinematics(
         target_position=INITIAL_EE_TARGET,
-        target_orientation=FIXED_EE_QUAT,
+        target_orientation=None,
     )
     if init_success and init_action is not None and init_action.joint_positions is not None:
         for i, dof_idx in enumerate(arm_dof_indices):
@@ -323,7 +363,7 @@ try:
         log(f"   arm_q={[round(float(current_target_angles[idx]),3) for idx in arm_dof_indices]}")
     else:
         log("[WARN] IK failed for initial pose, using fallback joint angles")
-        FALLBACK_POSE = [0.0, 0.7, 1.3, 0.0, 1.0, 0.0]
+        FALLBACK_POSE = [0.0, 0.5, -1.3, 0.0, 1.0, 0.0]
         for i, dof_idx in enumerate(arm_dof_indices):
             current_target_angles[dof_idx] = FALLBACK_POSE[i]
 
@@ -331,7 +371,7 @@ except Exception as e:
     IK_READY = False
     log(f"[WARN] Lula IK failed to init: {e}")
     log(f"   Falling back to fixed arm pose.")
-    FALLBACK_POSE = [0.0, 0.7, 1.3, 0.0, 1.0, 0.0]
+    FALLBACK_POSE = [0.0, 0.5, -1.3, 0.0, 1.0, 0.0]
     for i, dof_idx in enumerate(arm_dof_indices):
         current_target_angles[dof_idx] = FALLBACK_POSE[i]
 
@@ -343,6 +383,38 @@ wrist_target_pos = INITIAL_EE_TARGET.copy().astype(np.float32)
 
 log(f"[INFO] Arm ready. Sim EE: {[round(x,3) for x in get_ee_world_pos()]}")
 log(f"   Calibration: first-seen hand position = EE {INITIAL_EE_TARGET.tolist()}")
+
+# -- Set viewport camera: position [0,0,1], looking toward [0,1,0] --
+try:
+    from pxr import UsdGeom, Gf
+    # Create a dedicated camera prim
+    cam_path = "/World/teleop_camera"
+    cam_prim = stage.GetPrimAtPath(cam_path)
+    if not cam_prim.IsValid():
+        cam_prim = UsdGeom.Camera.Define(stage, cam_path).GetPrim()
+    xformable = UsdGeom.Xformable(cam_prim)
+    xformable.ClearXformOpOrder()
+    # Set camera transform: position [0, -0.5, 0.8], looking toward Y+
+    # Camera in USD looks along -Z local axis by default
+    # To look toward Y+: rotate 90deg around X
+    translate_op = xformable.AddTranslateOp()
+    translate_op.Set(Gf.Vec3d(0.0, -0.5, 0.8))
+    rotate_op = xformable.AddRotateXYZOp()
+    rotate_op.Set(Gf.Vec3d(90.0, 0.0, 0.0))  # Rx(90deg) to look along Y+
+    
+    for _ in range(3):
+        simulation_app.update()
+    
+    # Set viewport to use this camera
+    from omni.kit.viewport.utility import get_active_viewport
+    viewport_api = get_active_viewport()
+    if viewport_api:
+        viewport_api.camera_path = cam_path
+        log(f"[OK] Viewport camera set to {cam_path}")
+    else:
+        log("[WARN] Could not get active viewport")
+except Exception as e:
+    log(f"[WARN] Viewport camera setup failed: {e}")
 
 # ── Recording Setup ──
 from recorder import DemoRecorder
@@ -409,11 +481,12 @@ def vp_fingers_to_allegro(finger_transforms):
     angles[11] = angle_between(ring_vecs[2], ring_vecs[3])
     
     # Thumb (VP: 1-4, Allegro: joints 12-15)
-    th_vecs = [pos[2]-pos[1], pos[3]-pos[2], pos[4]-pos[3]]
-    angles[12] = 0.0  # thumb rotation (TODO)
-    angles[13] = angle_between(th_vecs[0], th_vecs[1])
-    angles[14] = angle_between(th_vecs[1], th_vecs[2])
-    angles[15] = 0.0  # extra
+    # Include wrist->knuckle vector for rotation angle
+    th_vecs = [pos[1]-pos[0], pos[2]-pos[1], pos[3]-pos[2], pos[4]-pos[3]]
+    angles[12] = angle_between(th_vecs[0], th_vecs[1])  # thumb rotation/abduction
+    angles[13] = angle_between(th_vecs[1], th_vecs[2])  # MCP flexion
+    angles[14] = angle_between(th_vecs[2], th_vecs[3])  # PIP flexion
+    angles[15] = angles[14] * 0.5  # DIP coupled to PIP
     
     return angles
 
@@ -434,19 +507,33 @@ try:
                 # Get right wrist SE3 transform (4x4)
                 rw = np.array(vp_data["right_wrist"][0], dtype=np.float64).copy()
                 
-                # Apply coordinate frame transform (VP -> Robot)
+                # Apply coordinate frame transform to rotation (VP -> Robot)
                 rw[:3, :3] = rw[:3, :3] @ OPERATOR2VP_RIGHT
                 raw_wrist_pos = rw[:3, 3].copy()  # 3D position in meters
                 
+                # -- Wrist ORIENTATION (following keti_retargeting) --
+                # 1. Extract quaternion from transformed rotation
+                quat_wxyz = rot_matrix_to_quat_wxyz(rw[:3, :3])
+                # 2. Use directly (OPERATOR2VP_RIGHT handles frame; no Rx(pi) needed for our setup)
+                target_quat = quat_wxyz / (np.linalg.norm(quat_wxyz) + 1e-8)
+                # 3. Smooth orientation (SLERP approximation via averaging)
+                quat_smooth = 0.3
+                # Ensure quaternion hemisphere consistency (avoid sign flip)
+                if np.dot(wrist_target_quat, target_quat) < 0:
+                    target_quat = -target_quat
+                wrist_target_quat[:] = wrist_target_quat * (1 - quat_smooth) + target_quat * quat_smooth
+                wrist_target_quat[:] = wrist_target_quat / (np.linalg.norm(wrist_target_quat) + 1e-8)
+                
+                # -- Wrist POSITION --
                 # First-seen calibration
                 if calib_reference is None:
                     calib_reference = raw_wrist_pos.copy()
                     log(f"[CALIB] First-seen VP wrist: {[round(x,3) for x in calib_reference]}")
                     log(f"   Maps to robot EE = {INITIAL_EE_TARGET.tolist()}")
                 
-                # Delta from reference -> robot workspace
-                delta = raw_wrist_pos - calib_reference
-                robot_pos = INITIAL_EE_TARGET + delta
+                # VP -> Isaac Sim coordinate mapping (direct 1:1)
+                vp_delta = raw_wrist_pos - calib_reference
+                robot_pos = INITIAL_EE_TARGET + vp_delta
                 
                 # Clip to safe workspace
                 robot_pos[0] = np.clip(robot_pos[0], INITIAL_EE_TARGET[0] - 0.4, INITIAL_EE_TARGET[0] + 0.4)
@@ -543,11 +630,10 @@ try:
 
         # -- IK for arm joints (Isaac Sim LulaKinematicsSolver) --
         if wrist_data_valid and IK_READY:
-            # Use FIXED orientation (handshake pose, fingers horizontal Y+)
-            # Position-only tracking from camera, orientation stays fixed
+            # Position + Orientation IK (following keti_retargeting pipeline)
             ik_action, ik_success = art_kinematics.compute_inverse_kinematics(
                 target_position=wrist_target_pos.astype(np.float64),
-                target_orientation=FIXED_EE_QUAT,
+                target_orientation=wrist_target_quat,
             )
             
             if ik_success and ik_action is not None:

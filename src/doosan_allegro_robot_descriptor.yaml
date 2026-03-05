@@ -14,7 +14,7 @@ cspace:
 
 root_link: arm_base_link
 
-default_q: [0.0, 0.7, 1.3, 0.0, 1.0, 0.0]
+default_q: [0.0, 0.5, -1.3, 0.0, 1.0, 0.0]
 
 # Fix all Allegro hand joints at 0 for IK purposes
 cspace_to_urdf_rules:
