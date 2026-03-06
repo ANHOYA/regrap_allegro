@@ -30,12 +30,30 @@ YCB_OBJECTS = {
         "dynamic_friction": 0.6,
         "restitution": 0.1,
     },
+    "baseball": {
+        "folder": "055_baseball",
+        "mass": 0.15,
+        "position": (0.05, 0.5, 0.0),
+        "label": "Baseball",
+        "static_friction": 0.8,
+        "dynamic_friction": 0.6,
+        "restitution": 0.3,
+    },
+    "softball": {
+        "folder": "054_softball",
+        "mass": 0.15,
+        "position": (0.05, 0.5, 0.0),
+        "label": "Softball",
+        "static_friction": 0.8,
+        "dynamic_friction": 0.6,
+        "restitution": 0.3,
+    },
 }
 
 # ═══════════════════════════════════════════
 #  ★ Change this to switch objects ★
 # ═══════════════════════════════════════════
-ACTIVE_OBJECT = "master_chef_can"
+ACTIVE_OBJECT = "softball"
 
 
 def get_active_object():
